@@ -66,7 +66,6 @@ float candleRange = high - low
 // ADX / DMI
 [diPlus, diMinus, adxVal] = ta.dmi(14, 14)
 bool adxTrending  = adxVal > 25
-bool adxWeak      = adxVal < 20
 bool dmiUpTrend   = diPlus > diMinus and adxTrending
 bool dmiDownTrend = diMinus > diPlus and adxTrending
 
@@ -102,7 +101,7 @@ bool  noTrend       = not na(pearsonR) and pearsonR > -0.3 and pearsonR < 0.3
 string autoHtf = tfMinutes <= 5 ? "60" : tfMinutes <= 15 ? "240" : tfMinutes <= 60 ? "D" : tfMinutes <= 1440 ? "W" : "M"
 string htfTf   = i_htfMode == "Auto" ? autoHtf : i_htfMode == "1H" ? "60" : i_htfMode == "4H" ? "240" : i_htfMode == "D" ? "D" : "W"
 
-htfTrendExpr = ta.ema(close, 20) > ta.ema(close, 50) and close > ta.ema(close, 20) ? 1.0 : ta.ema(close, 20) < ta.ema(close, 50) and close < ta.ema(close, 20) ? -1.0 : 0.0
+float htfTrendExpr = ta.ema(close, 20) > ta.ema(close, 50) and close > ta.ema(close, 20) ? 1.0 : ta.ema(close, 20) < ta.ema(close, 50) and close < ta.ema(close, 20) ? -1.0 : 0.0
 float _htfTrend = request.security(syminfo.tickerid, htfTf, htfTrendExpr[1], barmerge.gaps_off, barmerge.lookahead_on)
 float _htfRsi   = request.security(syminfo.tickerid, htfTf, ta.rsi(close, 14)[1], barmerge.gaps_off, barmerge.lookahead_on)
 
@@ -113,7 +112,7 @@ float htfTrend = nz(_htfTrend, 0.0)
 float htfRsi   = nz(_htfRsi, 50.0)
 bool  htfBull  = htfActive and htfTrend > 0
 bool  htfBear  = htfActive and htfTrend < 0
-bool  htfOversold  = htfActive and htfRsi < 35
+bool  htfOversold   = htfActive and htfRsi < 35
 bool  htfOverbought = htfActive and htfRsi > 65
 
 // ═══════════════════════════════════ VOLUME ══════════════════════════════════
@@ -136,7 +135,6 @@ bool  volMomWeak   = volMomRatio < 0.7
 float volZscore    = volSTD > 0 ? (volume - volSMA) / volSTD : 0.0
 bool  volSpike     = volZscore >= 1.5 or volume > volSMA * 2.0
 
-// Consecutive volume confirmation: 2 of 3 bars above average
 int volAboveCount = (volume > volSMA ? 1 : 0) + (volume[1] > nz(volSMA[1], volSMA) ? 1 : 0) + (volume[2] > nz(volSMA[2], volSMA) ? 1 : 0)
 bool volConfirmed = volAboveCount >= 2
 
@@ -238,14 +236,16 @@ if obBear
     obBearMitigated := false
 
 bool rawInBullOB = not na(obBullBtm) and low <= obBullTop and close > obBullBtm and (bar_index - nz(obBullBar, bar_index)) < 40
-if not obBullMitigated and nz(rawInBullOB[1], false) and not rawInBullOB
+bool prevBullOB  = not na(rawInBullOB[1]) and rawInBullOB[1]
+if not obBullMitigated and prevBullOB and not rawInBullOB
     obBullMitigated := true
 if not na(obBullBtm) and close < obBullBtm - atr * 0.5
     obBullMitigated := true
 bool inBullOB = rawInBullOB and not obBullMitigated
 
 bool rawInBearOB = not na(obBearTop) and high >= obBearBtm and close < obBearTop and (bar_index - nz(obBearBar, bar_index)) < 40
-if not obBearMitigated and nz(rawInBearOB[1], false) and not rawInBearOB
+bool prevBearOB  = not na(rawInBearOB[1]) and rawInBearOB[1]
+if not obBearMitigated and prevBearOB and not rawInBearOB
     obBearMitigated := true
 if not na(obBearTop) and close > obBearTop + atr * 0.5
     obBearMitigated := true
@@ -450,7 +450,6 @@ if swH
     cHP := lastSwHi
     cHR := ta.highest(rsi14, math.max(bar_index - lastSwHiBar + 1, 1))
 
-// Quality-filtered divergence: scale threshold with RSI level
 float divBullThr = rsi14 < 30 ? 2.5 : rsi14 < 40 ? 3.5 : 5.0
 float divBearThr = rsi14 > 70 ? 2.5 : rsi14 > 60 ? 3.5 : 5.0
 
@@ -485,7 +484,6 @@ int bSc = 0
 if swL
     bSc := 1
 
-    // ── Category 1: Structure (cap: -3 to +4) ──
     int catStruct = 0
     if trendSlope > 0 and close > ema20
         catStruct += 2
@@ -507,7 +505,6 @@ if swL
         catStruct += 1
     catStruct := math.max(math.min(catStruct, 4), -3)
 
-    // ── Category 2: Volume (cap: -1 to +3) ──
     int catVol = 0
     if bullDelta
         catVol += 1
@@ -525,7 +522,6 @@ if swL
         catVol -= 1
     catVol := math.max(math.min(catVol, 3), -1)
 
-    // ── Category 3: Momentum (cap: -1 to +3) ──
     int catMom = 0
     if rsi14 < 30
         catMom += 2
@@ -541,7 +537,6 @@ if swL
         catMom -= 1
     catMom := math.max(math.min(catMom, 3), -1)
 
-    // ── Category 4: Price Action (cap: 0 to +3) ──
     int catPA = 0
     if bullEng or bullEng[1]
         catPA += 1
@@ -551,7 +546,6 @@ if swL
         catPA += 2
     catPA := math.max(math.min(catPA, 3), 0)
 
-    // ── Category 5: SMC Confluence (cap: 0 to +3) ──
     int catSMC = 0
     if inBullOB or obBull
         catSMC += 1
@@ -573,7 +567,6 @@ if swL
         catSMC += 2
     catSMC := math.max(math.min(catSMC, 3), 0)
 
-    // ── Category 6: Divergence (cap: 0 to +3) ──
     int catDiv = 0
     if rBullDiv
         catDiv += 3
@@ -581,7 +574,6 @@ if swL
         catDiv += 1
     catDiv := math.max(math.min(catDiv, 3), 0)
 
-    // ── Category 7: HTF Alignment (cap: -2 to +2) ──
     int catHTF = 0
     if htfBull
         catHTF += 2
@@ -591,7 +583,6 @@ if swL
         catHTF += 1
     catHTF := math.max(math.min(catHTF, 2), -2)
 
-    // ── Regime adjustment (no cap) ──
     int catRegime = 0
     if isRanging
         catRegime -= 2
@@ -603,7 +594,6 @@ if swL
     buyScore    := bSc
     hasBuyScore := true
 
-// Exhaustion boost (additive, not override)
 if exhBot and swL
     int exhBonus = 0
     if rsi14 < 25
@@ -617,7 +607,6 @@ if exhBot and swL
     buyScore    := math.max(buyScore, buyScore + exhBonus)
     hasBuyScore := true
 
-// Standalone exhaustion: only with very strong confirmation
 if exhBot and not swL and (rsi14 < 25 or stochK < 15)
     int exhSc = 3
     if rsi14 < 25
@@ -638,7 +627,6 @@ int sSc = 0
 if swH
     sSc := 1
 
-    // ── Category 1: Structure (cap: -3 to +4) ──
     int catStruct2 = 0
     if trendSlope < 0 and close < ema20
         catStruct2 += 2
@@ -660,7 +648,6 @@ if swH
         catStruct2 += 1
     catStruct2 := math.max(math.min(catStruct2, 4), -3)
 
-    // ── Category 2: Volume (cap: -1 to +3) ──
     int catVol2 = 0
     if bearDelta
         catVol2 += 1
@@ -678,7 +665,6 @@ if swH
         catVol2 -= 1
     catVol2 := math.max(math.min(catVol2, 3), -1)
 
-    // ── Category 3: Momentum (cap: -1 to +3) ──
     int catMom2 = 0
     if rsi14 > 70
         catMom2 += 2
@@ -694,7 +680,6 @@ if swH
         catMom2 -= 1
     catMom2 := math.max(math.min(catMom2, 3), -1)
 
-    // ── Category 4: Price Action (cap: 0 to +3) ──
     int catPA2 = 0
     if bearEng or bearEng[1]
         catPA2 += 1
@@ -704,7 +689,6 @@ if swH
         catPA2 += 2
     catPA2 := math.max(math.min(catPA2, 3), 0)
 
-    // ── Category 5: SMC Confluence (cap: 0 to +3) ──
     int catSMC2 = 0
     if inBearOB or obBear
         catSMC2 += 1
@@ -726,7 +710,6 @@ if swH
         catSMC2 += 2
     catSMC2 := math.max(math.min(catSMC2, 3), 0)
 
-    // ── Category 6: Divergence (cap: 0 to +3) ──
     int catDiv2 = 0
     if rBearDiv
         catDiv2 += 3
@@ -734,7 +717,6 @@ if swH
         catDiv2 += 1
     catDiv2 := math.max(math.min(catDiv2, 3), 0)
 
-    // ── Category 7: HTF Alignment (cap: -2 to +2) ──
     int catHTF2 = 0
     if htfBear
         catHTF2 += 2
@@ -744,7 +726,6 @@ if swH
         catHTF2 += 1
     catHTF2 := math.max(math.min(catHTF2, 2), -2)
 
-    // ── Regime adjustment ──
     int catRegime2 = 0
     if isRanging
         catRegime2 -= 2
@@ -785,11 +766,10 @@ if exhTop and not swH and (rsi14 > 75 or stochK > 85)
         sellScore    := exhSc2
         hasSellScore := true
 
-// ═══════════════════════════════════ SIGNALS (DIRECTIONAL COOLDOWN + PERSISTENCE) ═══
+// ═══════════════════════════════════ SIGNALS ═════════════════════════════════
 var int lastBuyBar  = -9999
 var int lastSellBar = -9999
 
-// Score persistence window
 var int pendBuyScore  = 0
 var int pendBuyBar    = -9999
 var int pendSellScore = 0
@@ -811,7 +791,6 @@ bool sellInWindow = (bar_index - pendSellBar) <= i_sigWindow and pendSellScore >
 bool sigBuy  = buyInWindow  and barstate.isconfirmed and (bar_index - lastBuyBar  >= cooldown)
 bool sigSell = sellInWindow and barstate.isconfirmed and (bar_index - lastSellBar >= cooldown)
 
-// Conflict resolution
 if sigBuy and sigSell
     if pendBuyScore >= pendSellScore
         sigSell := false
@@ -823,7 +802,7 @@ if sigBuy
 if sigSell
     lastSellBar := bar_index
 
-// ═══════════════════════════════════ TRADE MANAGEMENT (ATR-BASED) ════════════
+// ═══════════════════════════════════ TRADE MANAGEMENT ════════════════════════
 var string posDir     = "none"
 var float  entryPrice = na
 var int    entryBar   = na
@@ -849,7 +828,7 @@ if posDir == "long" and not na(entryPrice)
     peakPnL    := math.max(peakPnL, unrealPnL)
     trailLevel := peakHigh * (1.0 - trailPct / 100.0)
     int dur = bar_index - nz(entryBar, bar_index)
-    float stopDist = dur < earlyBars ? i_earlyAtr * nz(entryAtr, atr) : i_stopAtr * nz(entryAtr, atr)
+    float stopDist  = dur < earlyBars ? i_earlyAtr * nz(entryAtr, atr) : i_stopAtr * nz(entryAtr, atr)
     float stopLevel = entryPrice - stopDist
     bool beExit   = peakPnL >= i_bePct and unrealPnL <= 0.05
     bool tp2Rev   = peakPnL >= i_tp2thr and (peakPnL - unrealPnL) >= i_tp2rev and unrealPnL > 0
@@ -920,7 +899,7 @@ if posDir == "none" and sigSell
     entrySc    := pendSellScore
     peakPnL    := 0.0
 
-// ═══════════════════════════════════ P&L + FIBONACCI TARGETS ═════════════════
+// ═══════════════════════════════════ P&L + TARGETS ═══════════════════════════
 var float prevWick  = na
 var bool  prevIsBuy = false
 float profitPct = na
@@ -955,7 +934,7 @@ if sigBuy and not na(lastSwLoBar)
     string lbl = "◆ " + str.tostring(pendBuyScore) + " " + getGrade(pendBuyScore)
     if not na(profitPct) and profitPct > 0
         lbl += "\n+" + str.tostring(profitPct, "#.##") + "%"
-    float lblAlpha = pendBuyScore >= 10 ? 0.0 : pendBuyScore >= 7 ? 15.0 : 35.0
+    int lblAlpha = pendBuyScore >= 10 ? 0 : pendBuyScore >= 7 ? 15 : 35
     label.new(lastSwLoBar, lastSwLo, lbl, style=label.style_label_up, color=color.new(cLong, lblAlpha), textcolor=cInfo, size=size.tiny)
 
     line.delete(tgtLine1)
@@ -981,7 +960,7 @@ if sigSell and not na(lastSwHiBar)
     string lbl2 = "◆ " + str.tostring(pendSellScore) + " " + getGrade(pendSellScore)
     if not na(profitPct) and profitPct > 0
         lbl2 += "\n+" + str.tostring(profitPct, "#.##") + "%"
-    float lblAlpha2 = pendSellScore >= 10 ? 0.0 : pendSellScore >= 7 ? 15.0 : 35.0
+    int lblAlpha2 = pendSellScore >= 10 ? 0 : pendSellScore >= 7 ? 15 : 35
     label.new(lastSwHiBar, lastSwHi, lbl2, style=label.style_label_down, color=color.new(cShort, lblAlpha2), textcolor=cInfo, size=size.tiny)
 
     line.delete(tgtLine1)
@@ -1017,10 +996,9 @@ if i_showDash and na(dash)
     dash := table.new(position.top_right, 2, 14, bgcolor=color.new(#0d1117, 0), border_width=1, border_color=color.new(#30363d, 0), frame_width=2, frame_color=color.new(cLong, 50))
 
 if i_showDash and barstate.islast and not na(dash)
-    // Clear all cells
-    for r = 0 to 13
-        table.cell(dash, 0, r, "", text_color=color.silver, text_size=size.small, bgcolor=color.new(#161b22, 0))
-        table.cell(dash, 1, r, "", text_color=color.silver, text_size=size.small, bgcolor=color.new(#161b22, 0))
+    for clrIdx = 0 to 13
+        table.cell(dash, 0, clrIdx, "", text_color=color.silver, text_size=size.small, bgcolor=color.new(#161b22, 0))
+        table.cell(dash, 1, clrIdx, "", text_color=color.silver, text_size=size.small, bgcolor=color.new(#161b22, 0))
 
     int r = 0
     table.cell(dash, 0, r, "⬡ PSE v15", text_color=cLong, text_size=size.small, bgcolor=color.new(#161b22, 0))
@@ -1055,7 +1033,6 @@ if i_showDash and barstate.islast and not na(dash)
         table.cell(dash, 1, r, str.tostring(bar_index - nz(entryBar, bar_index)) + "/" + str.tostring(timeout), text_color=color.white, text_size=size.small, bgcolor=color.new(#161b22, 0))
         r += 1
 
-    // Market context
     string htfStr = htfActive ? (htfTrend > 0 ? "↑ BULL" : htfTrend < 0 ? "↓ BEAR" : "— FLAT") : "OFF"
     color htfClr = htfTrend > 0 ? cLong : htfTrend < 0 ? cShort : color.gray
     table.cell(dash, 0, r, "HTF:", text_color=color.silver, text_size=size.small, bgcolor=color.new(#161b22, 0))
@@ -1074,9 +1051,7 @@ if i_showDash and barstate.islast and not na(dash)
     table.cell(dash, 1, r, str.tostring(rsi14, "#.#"), text_color=rsi14 < 30 ? cLong : rsi14 > 70 ? cShort : color.white, text_size=size.small, bgcolor=color.new(#161b22, 0))
     r += 1
 
-    // Performance stats
-    float winRate = totalTrades > 0 ? (float(wins) / float(totalTrades)) * 100.0 : 0.0
-    float avgPnL  = totalTrades > 0 ? cumPnL / float(totalTrades) : 0.0
+    float winRate = totalTrades > 0 ? wins * 100.0 / totalTrades : 0.0
     float pf = sumLosses > 0 ? sumWins / sumLosses : sumWins > 0 ? 99.9 : 0.0
 
     table.cell(dash, 0, r, "W/L:", text_color=color.silver, text_size=size.small, bgcolor=color.new(#161b22, 0))
