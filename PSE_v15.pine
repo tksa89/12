@@ -52,7 +52,7 @@ float atr   = ta.atr(i_atrLen)
 float rsi14 = ta.rsi(close, 14)
 float ema20 = ta.ema(close, 20)
 float ema50 = ta.ema(close, 50)
-float atrPct = close > 0 ? (atr / close) * 100.0 : 1.0
+float atrPct  = close > 0 ? (atr / close) * 100.0 : 1.0
 float zzDepth = math.max(atrPct * 5.0, 0.8)
 float rsiLo   = ta.lowest(rsi14, 14)
 float rsiHi   = ta.highest(rsi14, 14)
@@ -63,24 +63,20 @@ float bodyLo      = math.min(open, close)
 float bodyHi      = math.max(open, close)
 float candleRange = high - low
 
-// ADX / DMI
 [diPlus, diMinus, adxVal] = ta.dmi(14, 14)
 bool adxTrending  = adxVal > 25
 bool dmiUpTrend   = diPlus > diMinus and adxTrending
 bool dmiDownTrend = diMinus > diPlus and adxTrending
 
-// MACD
 [macdLine, signalLine, histLine] = ta.macd(close, 12, 26, 9)
-bool macdBull     = macdLine > signalLine
-bool macdBear     = macdLine < signalLine
-bool macdCrossUp  = ta.crossover(macdLine, signalLine)
-bool macdCrossDn  = ta.crossunder(macdLine, signalLine)
+bool macdBull    = macdLine > signalLine
+bool macdBear    = macdLine < signalLine
+bool macdCrossUp = ta.crossover(macdLine, signalLine)
+bool macdCrossDn = ta.crossunder(macdLine, signalLine)
 
-// EMA alignment
 bool emaAlignBull = ema20 > ema50 and close > ema20
 bool emaAlignBear = ema20 < ema50 and close < ema20
 
-// Kalman Filter
 float kfSrc = hl2
 var float kfV1 = 0.0
 var float kfV2 = 0.0
@@ -227,7 +223,6 @@ if obBosBear and not na(obSwLoX)
         obBearBar := oX2
     obSwLo := na
 
-// OB mitigation tracking
 var bool obBullMitigated = false
 var bool obBearMitigated = false
 if obBull
@@ -236,16 +231,14 @@ if obBear
     obBearMitigated := false
 
 bool rawInBullOB = not na(obBullBtm) and low <= obBullTop and close > obBullBtm and (bar_index - nz(obBullBar, bar_index)) < 40
-bool prevBullOB  = not na(rawInBullOB[1]) and rawInBullOB[1]
-if not obBullMitigated and prevBullOB and not rawInBullOB
+if not obBullMitigated and rawInBullOB[1] and not rawInBullOB
     obBullMitigated := true
 if not na(obBullBtm) and close < obBullBtm - atr * 0.5
     obBullMitigated := true
 bool inBullOB = rawInBullOB and not obBullMitigated
 
 bool rawInBearOB = not na(obBearTop) and high >= obBearBtm and close < obBearTop and (bar_index - nz(obBearBar, bar_index)) < 40
-bool prevBearOB  = not na(rawInBearOB[1]) and rawInBearOB[1]
-if not obBearMitigated and prevBearOB and not rawInBearOB
+if not obBearMitigated and rawInBearOB[1] and not rawInBearOB
     obBearMitigated := true
 if not na(obBearTop) and close > obBearTop + atr * 0.5
     obBearMitigated := true
@@ -266,7 +259,6 @@ if fvgBear
     lBearFvgT := low[2]
     lBearFvgB := high
 
-// FVG mitigation tracking
 var bool fvgBullMitigated = false
 var bool fvgBearMitigated = false
 if fvgBull
@@ -278,8 +270,8 @@ if not na(lBullFvgB) and close < lBullFvgB
 if not na(lBearFvgT) and close > lBearFvgT
     fvgBearMitigated := true
 
-bool inBullFvg = not na(lBullFvgB) and low <= lBullFvgT and close > lBullFvgB and not fvgBullMitigated and (bar_index - ta.barssince(fvgBull)) < 30
-bool inBearFvg = not na(lBearFvgT) and high >= lBearFvgB and close < lBearFvgT and not fvgBearMitigated and (bar_index - ta.barssince(fvgBear)) < 30
+bool inBullFvg = not na(lBullFvgB) and low <= lBullFvgT and close > lBullFvgB and not fvgBullMitigated and (bar_index - nz(ta.barssince(fvgBull), 9999)) < 30
+bool inBearFvg = not na(lBearFvgT) and high >= lBearFvgB and close < lBearFvgT and not fvgBearMitigated and (bar_index - nz(ta.barssince(fvgBear), 9999)) < 30
 
 // ═══════════════════════════════════ SWEEP ═══════════════════════════════════
 float recentLo = ta.lowest(low, lookback)[1]
@@ -443,12 +435,12 @@ if swL
     pLP := cLP
     pLR := cLR
     cLP := lastSwLo
-    cLR := ta.lowest(rsi14, math.max(bar_index - lastSwLoBar + 1, 1))
+    cLR := ta.lowest(rsi14, math.max(bar_index - nz(lastSwLoBar, bar_index) + 1, 1))
 if swH
     pHP := cHP
     pHR := cHR
     cHP := lastSwHi
-    cHR := ta.highest(rsi14, math.max(bar_index - lastSwHiBar + 1, 1))
+    cHR := ta.highest(rsi14, math.max(bar_index - nz(lastSwHiBar, bar_index) + 1, 1))
 
 float divBullThr = rsi14 < 30 ? 2.5 : rsi14 < 40 ? 3.5 : 5.0
 float divBearThr = rsi14 > 70 ? 2.5 : rsi14 > 60 ? 3.5 : 5.0
@@ -604,7 +596,7 @@ if exhBot and swL
         exhBonus += 1
     if paraBot
         exhBonus += 1
-    buyScore    := math.max(buyScore, buyScore + exhBonus)
+    buyScore    := buyScore + exhBonus
     hasBuyScore := true
 
 if exhBot and not swL and (rsi14 < 25 or stochK < 15)
@@ -747,7 +739,7 @@ if exhTop and swH
         exhBonus2 += 1
     if paraTop
         exhBonus2 += 1
-    sellScore    := math.max(sellScore, sellScore + exhBonus2)
+    sellScore    := sellScore + exhBonus2
     hasSellScore := true
 
 if exhTop and not swH and (rsi14 > 75 or stochK > 85)
