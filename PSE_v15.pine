@@ -1,0 +1,1068 @@
+//@version=6
+indicator("⬡ PSE v15", shorttitle="⬡ PSE", overlay=true, max_labels_count=500, max_lines_count=500, max_bars_back=5000)
+
+// ═══════════════════════════════════ INPUTS ══════════════════════════════════
+string g1 = "⬡ Core"
+int   i_buyMin    = input.int(5,   "Buy Min Score",    minval=2, maxval=15, group=g1)
+int   i_sellMin   = input.int(5,   "Sell Min Score",   minval=2, maxval=15, group=g1)
+int   i_cooldown  = input.int(3,   "Cooldown (bars)",  minval=1, maxval=20, group=g1)
+int   i_timeout   = input.int(20,  "Timeout (bars)",   minval=5, maxval=60, group=g1)
+int   i_sigWindow = input.int(3,   "Signal Window",    minval=1, maxval=8,  group=g1, tooltip="Bars after swing where score remains valid")
+
+string g2 = "⬡ Risk"
+float i_stopAtr   = input.float(1.5, "Stop Loss (ATR)",  minval=0.5, maxval=5.0, step=0.1, group=g2)
+float i_earlyAtr  = input.float(2.0, "Early Stop (ATR)", minval=0.5, maxval=5.0, step=0.1, group=g2)
+int   i_earlyBars = input.int(3,     "Early Stop Bars",  minval=1, maxval=10, group=g2)
+float i_bePct     = input.float(0.5, "BE Threshold %",   minval=0.1, maxval=3.0, step=0.1, group=g2)
+float i_tp2thr    = input.float(1.5, "TP2 Rev Thr %",    minval=0.5, maxval=5.0, step=0.1, group=g2)
+float i_tp2rev    = input.float(1.0, "TP2 Rev Dist %",   minval=0.3, maxval=3.0, step=0.1, group=g2)
+
+string g3 = "⬡ Swing"
+int i_atrLen = input.int(14, "ATR Length", minval=5, maxval=50, group=g3)
+
+string g5 = "⬡ Supertrend"
+float i_stMult = input.float(3.0, "ST Multiplier", minval=1.0, maxval=6.0, step=0.1, group=g5)
+
+string g6 = "⬡ Parabolic"
+float i_paraPct = input.float(20.0, "Parabolic %", minval=10.0, maxval=40.0, step=1.0, group=g6)
+
+string gHTF = "⬡ Multi-Timeframe"
+bool   i_useHTF  = input.bool(true, "Enable HTF Filter", group=gHTF)
+string i_htfMode = input.string("Auto", "HTF Mode", options=["Auto", "1H", "4H", "D", "W"], group=gHTF)
+
+string g4 = "⬡ Style"
+color cLong      = input.color(#48756e, "◆ Up",      group=g4)
+color cShort     = input.color(#8f2b22, "◆ Down",    group=g4)
+color cTgt       = input.color(#afafaf, "◆ Target",  group=g4)
+bool  i_showDash = input.bool(true,     "Show Dashboard", group=g4)
+
+string g7 = "⬡ Alerts"
+bool i_alerts = input.bool(true, "Enable Alerts", group=g7)
+
+// ═══════════════════════════════════ ADAPTIVE ENGINE ═════════════════════════
+float tfMinutes = timeframe.in_seconds() / 60.0
+float tfScale   = tfMinutes <= 1 ? 1.5 : tfMinutes <= 5 ? 1.3 : tfMinutes <= 15 ? 1.5 : tfMinutes <= 60 ? 1.3 : tfMinutes <= 240 ? 1.1 : tfMinutes <= 1440 ? 1.0 : 0.8
+int   cooldown  = math.round(i_cooldown * tfScale)
+int   timeout   = math.round(i_timeout * tfScale)
+int   earlyBars = math.round(i_earlyBars * tfScale)
+int   lookback  = tfMinutes <= 5 ? 20 : tfMinutes <= 15 ? 16 : tfMinutes <= 60 ? 14 : tfMinutes <= 240 ? 12 : tfMinutes <= 1440 ? 8 : 6
+
+// ═══════════════════════════════════ CORE ════════════════════════════════════
+float atr   = ta.atr(i_atrLen)
+float rsi14 = ta.rsi(close, 14)
+float ema20 = ta.ema(close, 20)
+float ema50 = ta.ema(close, 50)
+float atrPct  = close > 0 ? (atr / close) * 100.0 : 1.0
+float zzDepth = math.max(atrPct * 5.0, 0.8)
+float rsiLo   = ta.lowest(rsi14, 14)
+float rsiHi   = ta.highest(rsi14, 14)
+float stochK  = ta.sma(rsiHi != rsiLo ? (rsi14 - rsiLo) / (rsiHi - rsiLo) * 100.0 : 50.0, 3)
+
+float bodySize    = math.abs(close - open)
+float bodyLo      = math.min(open, close)
+float bodyHi      = math.max(open, close)
+float candleRange = high - low
+
+[diPlus, diMinus, adxVal] = ta.dmi(14, 14)
+bool adxTrending  = adxVal > 25
+bool dmiUpTrend   = diPlus > diMinus and adxTrending
+bool dmiDownTrend = diMinus > diPlus and adxTrending
+
+[macdLine, signalLine, histLine] = ta.macd(close, 12, 26, 9)
+bool macdBull    = macdLine > signalLine
+bool macdBear    = macdLine < signalLine
+bool macdCrossUp = ta.crossover(macdLine, signalLine)
+bool macdCrossDn = ta.crossunder(macdLine, signalLine)
+
+bool emaAlignBull = ema20 > ema50 and close > ema20
+bool emaAlignBear = ema20 < ema50 and close < ema20
+
+float kfSrc = hl2
+var float kfV1 = 0.0
+var float kfV2 = 0.0
+kfV1 := 0.2 * (kfSrc - nz(kfSrc[1], kfSrc)) + 0.8 * nz(kfV1[1], 0.0)
+kfV2 := 0.1 * ta.tr + 0.8 * nz(kfV2[1], ta.tr)
+float kfLam = kfV2 != 0 ? math.abs(kfV1 / kfV2) : 0.0
+float kfA   = (-math.pow(kfLam, 2) + math.sqrt(math.pow(kfLam, 4) + 16.0 * math.pow(kfLam, 2))) / 8.0
+var float kf = na
+kf := na(kf[1]) ? kfSrc : kfA * kfSrc + (1.0 - kfA) * nz(kf[1], kfSrc)
+float trendSlope = not na(kf) and not na(kf[3]) ? kf - kf[3] : 0.0
+
+float pearsonR     = ta.correlation(close, bar_index, 20)
+bool  strongUpTrend = not na(pearsonR) and pearsonR > 0.7
+bool  strongDnTrend = not na(pearsonR) and pearsonR < -0.7
+bool  noTrend       = not na(pearsonR) and pearsonR > -0.3 and pearsonR < 0.3
+
+// ═══════════════════════════════════ HTF CONFIRMATION ════════════════════════
+string autoHtf = tfMinutes <= 5 ? "60" : tfMinutes <= 15 ? "240" : tfMinutes <= 60 ? "D" : tfMinutes <= 1440 ? "W" : "M"
+string htfTf   = i_htfMode == "Auto" ? autoHtf : i_htfMode == "1H" ? "60" : i_htfMode == "4H" ? "240" : i_htfMode == "D" ? "D" : "W"
+
+float htfTrendExpr = ta.ema(close, 20) > ta.ema(close, 50) and close > ta.ema(close, 20) ? 1.0 : ta.ema(close, 20) < ta.ema(close, 50) and close < ta.ema(close, 20) ? -1.0 : 0.0
+float _htfTrend = request.security(syminfo.tickerid, htfTf, htfTrendExpr[1], barmerge.gaps_off, barmerge.lookahead_on)
+float _htfRsi   = request.security(syminfo.tickerid, htfTf, ta.rsi(close, 14)[1], barmerge.gaps_off, barmerge.lookahead_on)
+
+bool htfHigher = timeframe.in_seconds(htfTf) > timeframe.in_seconds()
+bool htfActive = i_useHTF and htfHigher
+
+float htfTrend = nz(_htfTrend, 0.0)
+float htfRsi   = nz(_htfRsi, 50.0)
+bool  htfBull  = htfActive and htfTrend > 0
+bool  htfBear  = htfActive and htfTrend < 0
+bool  htfOversold   = htfActive and htfRsi < 35
+bool  htfOverbought = htfActive and htfRsi > 65
+
+// ═══════════════════════════════════ VOLUME ══════════════════════════════════
+float hlRange = math.max(high - low, syminfo.mintick)
+float buyVol  = volume * (close - low) / hlRange
+float sellVol = volume - buyVol
+float delta   = buyVol - sellVol
+float normDelta    = volume > 0 ? delta / volume : 0.0
+bool  bullDelta    = normDelta > 0.05
+bool  bearDelta    = normDelta < -0.05
+float cumDelta     = ta.ema(buyVol, 14) - ta.ema(sellVol, 14)
+float cumDeltaSlow = ta.ema(cumDelta, 20)
+
+float volSMA  = ta.sma(volume, 20)
+float volSTD  = ta.stdev(volume, 20)
+float volFast = ta.sma(volume, 5)
+float volMomRatio  = volSMA > 0 ? volFast / volSMA : 1.0
+bool  volMomRising = volMomRatio > 1.0
+bool  volMomWeak   = volMomRatio < 0.7
+float volZscore    = volSTD > 0 ? (volume - volSMA) / volSTD : 0.0
+bool  volSpike     = volZscore >= 1.5 or volume > volSMA * 2.0
+
+int volAboveCount = (volume > volSMA ? 1 : 0) + (volume[1] > nz(volSMA[1], volSMA) ? 1 : 0) + (volume[2] > nz(volSMA[2], volSMA) ? 1 : 0)
+bool volConfirmed = volAboveCount >= 2
+
+bool deltaPriceDivBull = close > open and normDelta < -0.05
+bool deltaPriceDivBear = close < open and normDelta > 0.05
+
+float avgSpike = ta.sma(bodySize, 30)
+float relVol   = avgSpike > 0 ? bodySize / avgSpike : 1.0
+float relVolA  = volSMA > 0 ? volume / volSMA : 1.0
+float volPress = relVol - relVolA
+bool  volAccum   = volPress < -0.5 and close > open
+bool  volDistrib = volPress < -0.5 and close < open
+bool  weakBull   = volPress > 0.5 and close > open
+bool  weakBear   = volPress > 0.5 and close < open
+
+// ═══════════════════════════════════ DISPLACEMENT ════════════════════════════
+float rangeStdev = ta.stdev(candleRange, 50)
+float rangeMean  = ta.sma(candleRange, 50)
+float bodyRatio  = candleRange > 0 ? bodySize / candleRange : 0.0
+bool  bullCandle = close > open and (candleRange > rangeMean + rangeStdev * 1.5 or bodySize > atr * 0.5) and bodyRatio > 0.25
+bool  bearCandle = close < open and (candleRange > rangeMean + rangeStdev * 1.5 or bodySize > atr * 0.5) and bodyRatio > 0.25
+bool  fvgNear    = high[2] < low or low[2] > high
+bool  bullDisp   = bullCandle or bullCandle[1] or (bullCandle[1] and fvgNear)
+bool  bearDisp   = bearCandle or bearCandle[1] or (bearCandle[1] and fvgNear)
+
+// ═══════════════════════════════════ ORDER BLOCKS ════════════════════════════
+int obSwLen = math.max(3, lookback / 3)
+var int obOs = 0
+float obUpper = ta.highest(obSwLen)
+float obLower = ta.lowest(obSwLen)
+obOs := high[obSwLen] > obUpper ? 0 : low[obSwLen] < obLower ? 1 : obOs
+
+var float obSwHi  = na
+var float obSwLo  = na
+var int   obSwHiX = na
+var int   obSwLoX = na
+if obOs == 0 and obOs[1] != 0
+    obSwHi  := high[obSwLen]
+    obSwHiX := bar_index - obSwLen
+if obOs == 1 and obOs[1] != 1
+    obSwLo  := low[obSwLen]
+    obSwLoX := bar_index - obSwLen
+
+bool obBosBull = not na(obSwHi) and close > obSwHi and close[1] <= obSwHi
+bool obBosBear = not na(obSwLo) and close < obSwLo and close[1] >= obSwLo
+
+var float obBullTop = na
+var float obBullBtm = na
+var int   obBullBar = na
+bool obBull = false
+if obBosBull and not na(obSwHiX)
+    int span = bar_index - obSwHiX
+    float oT = na
+    float oB = na
+    int   oX = na
+    if span > 0 and span < 50
+        for i = 1 to math.min(span, 20)
+            if close[i] < open[i]
+                oT := math.max(open[i], close[i])
+                oB := low[i]
+                oX := bar_index - i
+                break
+    if not na(oT) and (oT - oB) <= atr * 3.0 and (oT - oB) > atr * 0.15
+        obBull    := true
+        obBullTop := oT
+        obBullBtm := oB
+        obBullBar := oX
+    obSwHi := na
+
+var float obBearTop = na
+var float obBearBtm = na
+var int   obBearBar = na
+bool obBear = false
+if obBosBear and not na(obSwLoX)
+    int span2 = bar_index - obSwLoX
+    float oT2 = na
+    float oB2 = na
+    int   oX2 = na
+    if span2 > 0 and span2 < 50
+        for i = 1 to math.min(span2, 20)
+            if close[i] > open[i]
+                oT2 := high[i]
+                oB2 := math.min(open[i], close[i])
+                oX2 := bar_index - i
+                break
+    if not na(oT2) and (oT2 - oB2) <= atr * 3.0 and (oT2 - oB2) > atr * 0.15
+        obBear    := true
+        obBearTop := oT2
+        obBearBtm := oB2
+        obBearBar := oX2
+    obSwLo := na
+
+var bool obBullMitigated = false
+var bool obBearMitigated = false
+if obBull
+    obBullMitigated := false
+if obBear
+    obBearMitigated := false
+
+bool rawInBullOB = not na(obBullBtm) and low <= obBullTop and close > obBullBtm and (bar_index - nz(obBullBar, bar_index)) < 40
+if not obBullMitigated and rawInBullOB[1] and not rawInBullOB
+    obBullMitigated := true
+if not na(obBullBtm) and close < obBullBtm - atr * 0.5
+    obBullMitigated := true
+bool inBullOB = rawInBullOB and not obBullMitigated
+
+bool rawInBearOB = not na(obBearTop) and high >= obBearBtm and close < obBearTop and (bar_index - nz(obBearBar, bar_index)) < 40
+if not obBearMitigated and rawInBearOB[1] and not rawInBearOB
+    obBearMitigated := true
+if not na(obBearTop) and close > obBearTop + atr * 0.5
+    obBearMitigated := true
+bool inBearOB = rawInBearOB and not obBearMitigated
+
+// ═══════════════════════════════════ FVG ═════════════════════════════════════
+float gapMin = math.max(rangeStdev * 0.3, atr * 0.1)
+bool fvgBull = low > high[2] and close[1] > high[2] and (low - high[2]) > gapMin
+bool fvgBear = high < low[2] and close[1] < low[2] and (low[2] - high) > gapMin
+var float lBullFvgT = na
+var float lBullFvgB = na
+var float lBearFvgT = na
+var float lBearFvgB = na
+if fvgBull
+    lBullFvgT := low
+    lBullFvgB := high[2]
+if fvgBear
+    lBearFvgT := low[2]
+    lBearFvgB := high
+
+var bool fvgBullMitigated = false
+var bool fvgBearMitigated = false
+if fvgBull
+    fvgBullMitigated := false
+if fvgBear
+    fvgBearMitigated := false
+if not na(lBullFvgB) and close < lBullFvgB
+    fvgBullMitigated := true
+if not na(lBearFvgT) and close > lBearFvgT
+    fvgBearMitigated := true
+
+bool inBullFvg = not na(lBullFvgB) and low <= lBullFvgT and close > lBullFvgB and not fvgBullMitigated and (bar_index - nz(ta.barssince(fvgBull), 9999)) < 30
+bool inBearFvg = not na(lBearFvgT) and high >= lBearFvgB and close < lBearFvgT and not fvgBearMitigated and (bar_index - nz(ta.barssince(fvgBear), 9999)) < 30
+
+// ═══════════════════════════════════ SWEEP ═══════════════════════════════════
+float recentLo = ta.lowest(low, lookback)[1]
+float recentHi = ta.highest(high, lookback)[1]
+bool  sweepLoBase = low < recentLo and close > recentLo
+bool  sweepHiBase = high > recentHi and close < recentHi
+bool  volSweep    = volume > volSMA
+bool  sweepLo       = sweepLoBase and (close > open or volSweep)
+bool  sweepHi       = sweepHiBase and (close < open or volSweep)
+bool  strongSweepLo = sweepLoBase and bodyLo > recentLo and volSweep and close > open
+bool  strongSweepHi = sweepHiBase and bodyHi < recentHi and volSweep and close < open
+
+// ═══════════════════════════════════ ENGULFING + PATTERNS ════════════════════
+float avgBody20 = ta.sma(bodySize, 20)
+bool  bullEng = close[1] < open[1] and close > open and close > open[1] and open < close[1] and (bodySize > avgBody20 or (close[1] < open[1] and close[2] < open[2]))
+bool  bearEng = close[1] > open[1] and close < open and open > close[1] and close < open[1] and (bodySize > avgBody20 or (close[1] > open[1] and close[2] > open[2]))
+float uShadow = high - bodyHi
+float lShadow = bodyLo - low
+bool  isHammer  = candleRange > 0 and lShadow >= bodySize * 2.0 and uShadow <= candleRange * 0.1 and bodySize < candleRange * 0.3 and bodyLo >= low + candleRange * 0.66
+bool  isShStar  = candleRange > 0 and uShadow >= bodySize * 2.0 and lShadow <= candleRange * 0.1 and bodySize < candleRange * 0.3 and bodyHi <= low + candleRange * 0.34
+float firstMid  = (close[2] + open[2]) / 2.0
+float prevBody1 = math.abs(close[1] - open[1])
+bool  isMStar   = close[2] < open[2] and prevBody1 < candleRange * 0.3 and close > open and close > firstMid and trendSlope < 0
+bool  isEStar   = close[2] > open[2] and prevBody1 < candleRange * 0.3 and close < open and close < firstMid and trendSlope > 0
+bool  bullRej   = close[1] < open[1] and low[1] < low[2] and low[1] < low
+bool  bearRej   = close[1] > open[1] and high[1] > high[2] and high[1] > high
+
+// ═══════════════════════════════════ REGIME-ADAPTIVE SUPERTREND ═══════════════
+float atrF = ta.sma(atr, 10)
+float atrS = ta.sma(atr, 50)
+float atrR = atrS > 0 ? atrF / atrS : 1.0
+int   regime    = atrR > 1.4 ? 2 : (noTrend and atrR < 0.9) ? 0 : 1
+bool  isRanging = regime == 0
+
+float adaptMult = regime == 2 ? math.min(i_stMult * atrR, i_stMult * 2.0) : regime == 0 ? i_stMult * 0.85 : i_stMult
+[stValue, stRawDir] = ta.supertrend(adaptMult, 10)
+int stDir = stRawDir == -1 ? 1 : -1
+
+// ═══════════════════════════════════ ZIGZAG ══════════════════════════════════
+var float zzH = high
+var float zzL = low
+var int   zzHB = bar_index
+var int   zzLB = bar_index
+var int   zzD  = 0
+var float lastSwHi    = na
+var float lastSwLo    = na
+var int   lastSwHiBar = na
+var int   lastSwLoBar = na
+var float pSwHi2 = na
+var float pSwLo2 = na
+var string swCls = "none"
+
+if high > zzH
+    zzH  := high
+    zzHB := bar_index
+if low < zzL
+    zzL  := low
+    zzLB := bar_index
+
+bool swH = false
+bool swL = false
+float revPct = zzDepth / 100.0
+float aVol2  = (volume + volume[1]) / 2.0
+bool  zzVOk  = aVol2 > volSMA * 0.6
+int   zzMinB = tfMinutes <= 5 ? 5 : tfMinutes <= 15 ? 4 : 3
+
+if zzD >= 0
+    float dr = zzH > 0 ? (zzH - low) / zzH : 0.0
+    if dr >= revPct and (bar_index - zzHB) >= zzMinB and zzVOk
+        swH      := true
+        pSwHi2   := lastSwHi
+        lastSwHi := zzH
+        lastSwHiBar := zzHB
+        swCls := not na(pSwHi2) ? (lastSwHi > pSwHi2 ? "HH" : "LH") : "none"
+        zzD  := -1
+        zzL  := low
+        zzLB := bar_index
+
+if zzD <= 0
+    float ri = zzL > 0 ? (high - zzL) / zzL : 0.0
+    if ri >= revPct and (bar_index - zzLB) >= zzMinB and zzVOk
+        swL      := true
+        pSwLo2   := lastSwLo
+        lastSwLo := zzL
+        lastSwLoBar := zzLB
+        swCls := not na(pSwLo2) ? (lastSwLo > pSwLo2 ? "HL" : "LL") : "none"
+        zzD  := 1
+        zzH  := high
+        zzHB := bar_index
+
+bool zzBull  = swCls == "HH" or swCls == "HL"
+bool zzBear  = swCls == "LH" or swCls == "LL"
+bool smcBull = (sweepLo or sweepLo[1] or sweepLo[2]) and zzBull and (inBullOB or inBullFvg)
+bool smcBear = (sweepHi or sweepHi[1] or sweepHi[2]) and zzBear and (inBearOB or inBearFvg)
+
+// ═══════════════════════════════════ VWAP ════════════════════════════════════
+var float vN = 0.0
+var float vD = 0.0
+var float vS = 0.0
+float h3 = hlc3
+if swH or swL
+    vN := h3 * volume
+    vD := volume
+    vS := h3 * h3 * volume
+else
+    vN += h3 * volume
+    vD += volume
+    vS += h3 * h3 * volume
+float aVwap = vD > 0 ? vN / vD : close
+float vVar  = vD > 0 ? math.max(vS / vD - aVwap * aVwap, 0.0) : 0.0
+float vStd  = math.sqrt(vVar)
+float vDist = atr > 0 ? (close - aVwap) / atr : 0.0
+bool  belowVwap = vDist < -0.5
+bool  aboveVwap = vDist > 0.5
+bool  deepDisc  = close < aVwap - vStd
+bool  deepPrem  = close > aVwap + vStd
+
+var int lastBuyLVD  = -9999
+var int lastSellLVD = -9999
+if swL and volMomWeak
+    lastBuyLVD := bar_index
+if swH and volMomWeak
+    lastSellLVD := bar_index
+
+// ═══════════════════════════════════ EXHAUSTION ══════════════════════════════
+float lo20 = ta.lowest(low, 20)
+float hi20 = ta.highest(high, 20)
+float rise20 = (high - lo20) / math.max(lo20, 1) * 100.0
+float drop20 = (hi20 - low) / math.max(hi20, 1) * 100.0
+bool paraTop = rise20 > i_paraPct and close < open and close[1] > open[1]
+bool paraBot = drop20 > i_paraPct and close > open and close[1] < open[1]
+
+var int lBCnt = 0
+var int lSCnt = 0
+lBCnt := close > close[4] ? lBCnt + 1 : lBCnt
+lSCnt := close < close[4] ? lSCnt + 1 : lSCnt
+bool leleTop = lBCnt > 10 and close < open and high >= hi20
+bool leleBot = lSCnt > 10 and close > open and low  <= lo20
+if leleTop
+    lBCnt := 0
+if leleBot
+    lSCnt := 0
+
+float impE  = atr > 0 ? (bodySize / atr) * relVolA : 0.0
+float avgE3 = (impE[1] + impE[2] + impE[3]) / 3.0
+bool  eFade = impE < avgE3 * 0.4 and avgE3 > 1.0
+bool  exhTop = paraTop or leleTop or (rise20 > i_paraPct * 0.7 and eFade and close < open)
+bool  exhBot = paraBot or leleBot or (drop20 > i_paraPct * 0.7 and eFade and close > open)
+
+// ═══════════════════════════════════ RSI DIVERGENCE ══════════════════════════
+var float pLP = na
+var float pLR = na
+var float cLP = na
+var float cLR = na
+var float pHP = na
+var float pHR = na
+var float cHP = na
+var float cHR = na
+
+if swL
+    pLP := cLP
+    pLR := cLR
+    cLP := lastSwLo
+    cLR := ta.lowest(rsi14, math.max(bar_index - nz(lastSwLoBar, bar_index) + 1, 1))
+if swH
+    pHP := cHP
+    pHR := cHR
+    cHP := lastSwHi
+    cHR := ta.highest(rsi14, math.max(bar_index - nz(lastSwHiBar, bar_index) + 1, 1))
+
+float divBullThr = rsi14 < 30 ? 2.5 : rsi14 < 40 ? 3.5 : 5.0
+float divBearThr = rsi14 > 70 ? 2.5 : rsi14 > 60 ? 3.5 : 5.0
+
+bool bDR = swL and not na(pLP) and cLP < pLP and cLR > pLR
+bool bDH = swL and not na(pLP) and cLP > pLP and cLR < pLR
+bool sDR = swH and not na(pHP) and cHP > pHP and cHR < pHR
+bool sDH = swH and not na(pHP) and cHP < pHP and cHR > pHR
+bool bullDiv = (bDR or bDH) and (bDR ? math.abs(cLR - pLR) : math.abs(pLR - cLR)) > divBullThr
+bool bearDiv = (sDR or sDH) and (sDR ? math.abs(pHR - cHR) : math.abs(cHR - pHR)) > divBearThr
+
+float rsiBasis = ta.sma(rsi14, 50)
+float rsiStd   = ta.stdev(rsi14, 50)
+bool  dynRsiOS = rsi14 < math.max(rsiBasis - rsiStd * 1.5, 5.0)
+bool  dynRsiOB = rsi14 > math.min(rsiBasis + rsiStd * 1.5, 95.0)
+
+var int lBDBar = -9999
+var int lSDBar = -9999
+if bullDiv
+    lBDBar := bar_index
+if bearDiv
+    lSDBar := bar_index
+bool rBullDiv = (bar_index - lBDBar) <= 5
+bool rBearDiv = (bar_index - lSDBar) <= 5
+
+// ═══════════════════════════════════ SCORING (CATEGORY-CAPPED) ═══════════════
+var int buyScore  = 0
+var int sellScore = 0
+bool hasBuyScore  = false
+bool hasSellScore = false
+
+int bSc = 0
+if swL
+    bSc := 1
+
+    int catStruct = 0
+    if trendSlope > 0 and close > ema20
+        catStruct += 2
+    if stDir == 1
+        catStruct += 1
+    if zzBull
+        catStruct += 1
+    if zzBear
+        catStruct -= 1
+    if trendSlope < 0 and close < ema20 and stDir == -1
+        catStruct -= 3
+    if strongUpTrend
+        catStruct += 1
+    if noTrend
+        catStruct -= 1
+    if dmiUpTrend
+        catStruct += 1
+    if emaAlignBull
+        catStruct += 1
+    catStruct := math.max(math.min(catStruct, 4), -3)
+
+    int catVol = 0
+    if bullDelta
+        catVol += 1
+    if bullDelta and volConfirmed and volSpike
+        catVol += 1
+    if cumDelta > cumDeltaSlow
+        catVol += 1
+    if volMomRising and bullDelta
+        catVol += 1
+    if deltaPriceDivBull
+        catVol -= 1
+    if volAccum
+        catVol += 1
+    if weakBull
+        catVol -= 1
+    catVol := math.max(math.min(catVol, 3), -1)
+
+    int catMom = 0
+    if rsi14 < 30
+        catMom += 2
+    else if rsi14 < 40
+        catMom += 1
+    if dynRsiOS and rsi14 >= 30
+        catMom += 1
+    if stochK < 20
+        catMom += 1
+    if macdBull or macdCrossUp
+        catMom += 1
+    if rsi14 > 45 and rsi14 < 55
+        catMom -= 1
+    catMom := math.max(math.min(catMom, 3), -1)
+
+    int catPA = 0
+    if bullEng or bullEng[1]
+        catPA += 1
+    if isHammer or bullRej
+        catPA += 1
+    if isMStar
+        catPA += 2
+    catPA := math.max(math.min(catPA, 3), 0)
+
+    int catSMC = 0
+    if inBullOB or obBull
+        catSMC += 1
+    if sweepLo or sweepLo[1]
+        catSMC += 1
+    if strongSweepLo
+        catSMC += 1
+    if inBullOB and (fvgBull or inBullFvg)
+        catSMC += 1
+    if inBullFvg and not inBullOB
+        catSMC += 1
+    if bullDisp
+        catSMC += 1
+    if belowVwap
+        catSMC += 1
+    if deepDisc
+        catSMC += 1
+    if smcBull
+        catSMC += 2
+    catSMC := math.max(math.min(catSMC, 3), 0)
+
+    int catDiv = 0
+    if rBullDiv
+        catDiv += 3
+    if bar_index - lastBuyLVD <= 20
+        catDiv += 1
+    catDiv := math.max(math.min(catDiv, 3), 0)
+
+    int catHTF = 0
+    if htfBull
+        catHTF += 2
+    if htfBear
+        catHTF -= 2
+    if htfOversold
+        catHTF += 1
+    catHTF := math.max(math.min(catHTF, 2), -2)
+
+    int catRegime = 0
+    if isRanging
+        catRegime -= 2
+    if regime == 1 and trendSlope > 0
+        catRegime += 1
+
+    bSc += catStruct + catVol + catMom + catPA + catSMC + catDiv + catHTF + catRegime
+    bSc := math.max(bSc, 0)
+    buyScore    := bSc
+    hasBuyScore := true
+
+if exhBot and swL
+    int exhBonus = 0
+    if rsi14 < 25
+        exhBonus += 2
+    if stochK < 15
+        exhBonus += 2
+    if leleBot
+        exhBonus += 1
+    if paraBot
+        exhBonus += 1
+    buyScore    := buyScore + exhBonus
+    hasBuyScore := true
+
+if exhBot and not swL and (rsi14 < 25 or stochK < 15)
+    int exhSc = 3
+    if rsi14 < 25
+        exhSc += 2
+    if stochK < 15
+        exhSc += 2
+    if leleBot
+        exhSc += 1
+    if bullDelta and volSpike
+        exhSc += 1
+    if trendSlope > 0
+        exhSc += 1
+    if exhSc >= 6
+        buyScore    := exhSc
+        hasBuyScore := true
+
+int sSc = 0
+if swH
+    sSc := 1
+
+    int catStruct2 = 0
+    if trendSlope < 0 and close < ema20
+        catStruct2 += 2
+    if stDir == -1
+        catStruct2 += 1
+    if zzBear
+        catStruct2 += 1
+    if zzBull
+        catStruct2 -= 1
+    if trendSlope > 0 and close > ema20 and stDir == 1
+        catStruct2 -= 3
+    if strongDnTrend
+        catStruct2 += 1
+    if noTrend
+        catStruct2 -= 1
+    if dmiDownTrend
+        catStruct2 += 1
+    if emaAlignBear
+        catStruct2 += 1
+    catStruct2 := math.max(math.min(catStruct2, 4), -3)
+
+    int catVol2 = 0
+    if bearDelta
+        catVol2 += 1
+    if bearDelta and volConfirmed and volSpike
+        catVol2 += 1
+    if cumDelta < cumDeltaSlow
+        catVol2 += 1
+    if volMomRising and bearDelta
+        catVol2 += 1
+    if deltaPriceDivBear
+        catVol2 -= 1
+    if volDistrib
+        catVol2 += 1
+    if weakBear
+        catVol2 -= 1
+    catVol2 := math.max(math.min(catVol2, 3), -1)
+
+    int catMom2 = 0
+    if rsi14 > 70
+        catMom2 += 2
+    else if rsi14 > 60
+        catMom2 += 1
+    if dynRsiOB and rsi14 <= 70
+        catMom2 += 1
+    if stochK > 80
+        catMom2 += 1
+    if macdBear or macdCrossDn
+        catMom2 += 1
+    if rsi14 > 45 and rsi14 < 55
+        catMom2 -= 1
+    catMom2 := math.max(math.min(catMom2, 3), -1)
+
+    int catPA2 = 0
+    if bearEng or bearEng[1]
+        catPA2 += 1
+    if isShStar or bearRej
+        catPA2 += 1
+    if isEStar
+        catPA2 += 2
+    catPA2 := math.max(math.min(catPA2, 3), 0)
+
+    int catSMC2 = 0
+    if inBearOB or obBear
+        catSMC2 += 1
+    if sweepHi or sweepHi[1]
+        catSMC2 += 1
+    if strongSweepHi
+        catSMC2 += 1
+    if inBearOB and (fvgBear or inBearFvg)
+        catSMC2 += 1
+    if inBearFvg and not inBearOB
+        catSMC2 += 1
+    if bearDisp
+        catSMC2 += 1
+    if aboveVwap
+        catSMC2 += 1
+    if deepPrem
+        catSMC2 += 1
+    if smcBear
+        catSMC2 += 2
+    catSMC2 := math.max(math.min(catSMC2, 3), 0)
+
+    int catDiv2 = 0
+    if rBearDiv
+        catDiv2 += 3
+    if bar_index - lastSellLVD <= 20
+        catDiv2 += 1
+    catDiv2 := math.max(math.min(catDiv2, 3), 0)
+
+    int catHTF2 = 0
+    if htfBear
+        catHTF2 += 2
+    if htfBull
+        catHTF2 -= 2
+    if htfOverbought
+        catHTF2 += 1
+    catHTF2 := math.max(math.min(catHTF2, 2), -2)
+
+    int catRegime2 = 0
+    if isRanging
+        catRegime2 -= 2
+    if regime == 1 and trendSlope < 0
+        catRegime2 += 1
+
+    sSc += catStruct2 + catVol2 + catMom2 + catPA2 + catSMC2 + catDiv2 + catHTF2 + catRegime2
+    sSc := math.max(sSc, 0)
+    sellScore    := sSc
+    hasSellScore := true
+
+if exhTop and swH
+    int exhBonus2 = 0
+    if rsi14 > 75
+        exhBonus2 += 2
+    if stochK > 85
+        exhBonus2 += 2
+    if leleTop
+        exhBonus2 += 1
+    if paraTop
+        exhBonus2 += 1
+    sellScore    := sellScore + exhBonus2
+    hasSellScore := true
+
+if exhTop and not swH and (rsi14 > 75 or stochK > 85)
+    int exhSc2 = 3
+    if rsi14 > 75
+        exhSc2 += 2
+    if stochK > 85
+        exhSc2 += 2
+    if leleTop
+        exhSc2 += 1
+    if bearDelta and volSpike
+        exhSc2 += 1
+    if trendSlope < 0
+        exhSc2 += 1
+    if exhSc2 >= 6
+        sellScore    := exhSc2
+        hasSellScore := true
+
+// ═══════════════════════════════════ SIGNALS ═════════════════════════════════
+var int lastBuyBar  = -9999
+var int lastSellBar = -9999
+
+var int pendBuyScore  = 0
+var int pendBuyBar    = -9999
+var int pendSellScore = 0
+var int pendSellBar   = -9999
+
+if hasBuyScore
+    pendBuyScore := buyScore
+    pendBuyBar   := bar_index
+if hasSellScore
+    pendSellScore := sellScore
+    pendSellBar   := bar_index
+
+int dynBuyMin  = rsi14 < 25 or stochK < 10 ? math.max(i_buyMin - 1, 2) : i_buyMin
+int dynSellMin = rsi14 > 75 or stochK > 90 ? math.max(i_sellMin - 1, 3) : i_sellMin
+
+bool buyInWindow  = (bar_index - pendBuyBar)  <= i_sigWindow and pendBuyScore  >= dynBuyMin
+bool sellInWindow = (bar_index - pendSellBar) <= i_sigWindow and pendSellScore >= dynSellMin
+
+bool sigBuy  = buyInWindow  and barstate.isconfirmed and (bar_index - lastBuyBar  >= cooldown)
+bool sigSell = sellInWindow and barstate.isconfirmed and (bar_index - lastSellBar >= cooldown)
+
+if sigBuy and sigSell
+    if pendBuyScore >= pendSellScore
+        sigSell := false
+    else
+        sigBuy := false
+
+if sigBuy
+    lastBuyBar := bar_index
+if sigSell
+    lastSellBar := bar_index
+
+// ═══════════════════════════════════ TRADE MANAGEMENT ════════════════════════
+var string posDir     = "none"
+var float  entryPrice = na
+var int    entryBar   = na
+var float  entryAtr   = na
+var float  peakHigh   = na
+var float  peakLow    = na
+var int    entrySc    = 0
+var float  peakPnL    = 0.0
+var float  trailLevel = na
+
+float baseTrail = entrySc >= 8 ? 4.0 : entrySc >= 7 ? 3.0 : entrySc >= 5 ? 2.5 : 2.0
+float tighten   = peakPnL >= 6.0 ? 0.5 : peakPnL >= 4.0 ? 0.3 : peakPnL >= 2.0 ? 0.15 : 0.0
+float volFadeT  = (volMomWeak and peakPnL > 1.0) ? 0.2 : 0.0
+float trailPct  = math.max(baseTrail - tighten - volFadeT, 0.8)
+
+bool exitSignal   = false
+string exitReason = ""
+float unrealPnL   = 0.0
+
+if posDir == "long" and not na(entryPrice)
+    peakHigh   := math.max(nz(peakHigh, high), high)
+    unrealPnL  := (close - entryPrice) / entryPrice * 100.0
+    peakPnL    := math.max(peakPnL, unrealPnL)
+    trailLevel := peakHigh * (1.0 - trailPct / 100.0)
+    int dur = bar_index - nz(entryBar, bar_index)
+    float stopDist  = dur < earlyBars ? i_earlyAtr * nz(entryAtr, atr) : i_stopAtr * nz(entryAtr, atr)
+    float stopLevel = entryPrice - stopDist
+    bool beExit   = peakPnL >= i_bePct and unrealPnL <= 0.05
+    bool tp2Rev   = peakPnL >= i_tp2thr and (peakPnL - unrealPnL) >= i_tp2rev and unrealPnL > 0
+    bool momExit  = eFade and peakPnL >= 2.0 and unrealPnL > 0.5
+    if sigSell or close <= trailLevel or close <= stopLevel or dur >= timeout or beExit or tp2Rev or momExit
+        exitSignal := true
+        exitReason := sigSell ? "signal" : close <= trailLevel ? "trail" : close <= stopLevel ? "stop" : dur >= timeout ? "timeout" : "mgmt"
+
+if posDir == "short" and not na(entryPrice)
+    peakLow    := math.min(nz(peakLow, low), low)
+    unrealPnL  := (entryPrice - close) / entryPrice * 100.0
+    peakPnL    := math.max(peakPnL, unrealPnL)
+    trailLevel := peakLow * (1.0 + trailPct / 100.0)
+    int dur2 = bar_index - nz(entryBar, bar_index)
+    float stopDist2  = dur2 < earlyBars ? i_earlyAtr * nz(entryAtr, atr) : i_stopAtr * nz(entryAtr, atr)
+    float stopLevel2 = entryPrice + stopDist2
+    bool beExit2  = peakPnL >= i_bePct and unrealPnL <= 0.05
+    bool tp2Rev2  = peakPnL >= i_tp2thr and (peakPnL - unrealPnL) >= i_tp2rev and unrealPnL > 0
+    bool momExit2 = eFade and peakPnL >= 2.0 and unrealPnL > 0.5
+    if sigBuy or close >= trailLevel or close >= stopLevel2 or dur2 >= timeout or beExit2 or tp2Rev2 or momExit2
+        exitSignal := true
+        exitReason := sigBuy ? "signal" : close >= trailLevel ? "trail" : close >= stopLevel2 ? "stop" : dur2 >= timeout ? "timeout" : "mgmt"
+
+// ═══════════════════════════════════ WIN/LOSS TRACKING ═══════════════════════
+var int   totalTrades = 0
+var int   wins        = 0
+var int   losses      = 0
+var float cumPnL      = 0.0
+var float sumWins     = 0.0
+var float sumLosses   = 0.0
+
+if exitSignal and posDir != "none"
+    totalTrades += 1
+    cumPnL += unrealPnL
+    if unrealPnL > 0
+        wins += 1
+        sumWins += unrealPnL
+    else
+        losses += 1
+        sumLosses += math.abs(unrealPnL)
+
+if exitSignal and posDir != "none"
+    posDir     := "none"
+    entryPrice := na
+    entryBar   := na
+    entryAtr   := na
+    peakHigh   := na
+    peakLow    := na
+    entrySc    := 0
+    peakPnL    := 0.0
+    trailLevel := na
+
+if posDir == "none" and sigBuy
+    posDir     := "long"
+    entryPrice := close
+    entryBar   := bar_index
+    entryAtr   := atr
+    peakHigh   := high
+    entrySc    := pendBuyScore
+    peakPnL    := 0.0
+
+if posDir == "none" and sigSell
+    posDir     := "short"
+    entryPrice := close
+    entryBar   := bar_index
+    entryAtr   := atr
+    peakLow    := low
+    entrySc    := pendSellScore
+    peakPnL    := 0.0
+
+// ═══════════════════════════════════ P&L + TARGETS ═══════════════════════════
+var float prevWick  = na
+var bool  prevIsBuy = false
+float profitPct = na
+
+if sigBuy
+    if not na(prevWick) and not prevIsBuy
+        profitPct := (prevWick - lastSwLo) / prevWick * 100.0
+    prevWick  := lastSwLo
+    prevIsBuy := true
+
+if sigSell
+    if not na(prevWick) and prevIsBuy
+        profitPct := (lastSwHi - prevWick) / prevWick * 100.0
+    prevWick  := lastSwHi
+    prevIsBuy := false
+
+// ═══════════════════════════════════ LABELS + TARGETS ════════════════════════
+color cInfo = #948d8d
+float safeAtr = math.max(atr, syminfo.mintick)
+var float tgt1 = na
+var float tgt2 = na
+
+var line  tgtLine1 = na
+var line  tgtLine2 = na
+var label tgtLbl1  = na
+var label tgtLbl2  = na
+
+getGrade(int sc) =>
+    sc >= 12 ? "A+" : sc >= 10 ? "A" : sc >= 8 ? "B+" : sc >= 6 ? "B" : sc >= 4 ? "C+" : "C"
+
+if sigBuy and not na(lastSwLoBar)
+    string lbl = "◆ " + str.tostring(pendBuyScore) + " " + getGrade(pendBuyScore)
+    if not na(profitPct) and profitPct > 0
+        lbl += "\n+" + str.tostring(profitPct, "#.##") + "%"
+    int lblAlpha = pendBuyScore >= 10 ? 0 : pendBuyScore >= 7 ? 15 : 35
+    label.new(lastSwLoBar, lastSwLo, lbl, style=label.style_label_up, color=color.new(cLong, lblAlpha), textcolor=cInfo, size=size.tiny)
+
+    line.delete(tgtLine1)
+    line.delete(tgtLine2)
+    label.delete(tgtLbl1)
+    label.delete(tgtLbl2)
+    float swRange = not na(lastSwHi) and not na(lastSwLo) ? lastSwHi - lastSwLo : safeAtr * 3.0
+    float t1 = close + swRange * 0.618
+    float t2 = close + swRange * 1.0
+    if not na(lastSwHi) and t1 <= close
+        t1 := close + (lastSwHi - close) * 0.5
+    if not na(lastSwHi) and t2 <= close
+        t2 := close + safeAtr * 2.0
+    tgt1 := t1
+    tgt2 := t2
+    int x2 = bar_index + 15
+    tgtLine1 := line.new(bar_index, t1, x2, t1, color=color.new(cLong, 50), style=line.style_dashed, width=1)
+    tgtLbl1  := label.new(x2, t1, "⬡ T1 " + str.tostring(t1, format.mintick), color=color.new(color.black, 100), textcolor=color.new(cLong, 30), style=label.style_label_left, size=size.tiny)
+    tgtLine2 := line.new(bar_index, t2, x2, t2, color=color.new(cLong, 50), style=line.style_dashed, width=1)
+    tgtLbl2  := label.new(x2, t2, "⬡ T2 " + str.tostring(t2, format.mintick), color=color.new(color.black, 100), textcolor=color.new(cLong, 30), style=label.style_label_left, size=size.tiny)
+
+if sigSell and not na(lastSwHiBar)
+    string lbl2 = "◆ " + str.tostring(pendSellScore) + " " + getGrade(pendSellScore)
+    if not na(profitPct) and profitPct > 0
+        lbl2 += "\n+" + str.tostring(profitPct, "#.##") + "%"
+    int lblAlpha2 = pendSellScore >= 10 ? 0 : pendSellScore >= 7 ? 15 : 35
+    label.new(lastSwHiBar, lastSwHi, lbl2, style=label.style_label_down, color=color.new(cShort, lblAlpha2), textcolor=cInfo, size=size.tiny)
+
+    line.delete(tgtLine1)
+    line.delete(tgtLine2)
+    label.delete(tgtLbl1)
+    label.delete(tgtLbl2)
+    float swRange2 = not na(lastSwHi) and not na(lastSwLo) ? lastSwHi - lastSwLo : safeAtr * 3.0
+    float t1s = close - swRange2 * 0.618
+    float t2s = close - swRange2 * 1.0
+    if not na(lastSwLo) and t1s >= close
+        t1s := close - (close - lastSwLo) * 0.5
+    if not na(lastSwLo) and t2s >= close
+        t2s := close - safeAtr * 2.0
+    tgt1 := t1s
+    tgt2 := t2s
+    int x2s = bar_index + 15
+    tgtLine1 := line.new(bar_index, t1s, x2s, t1s, color=color.new(cShort, 50), style=line.style_dashed, width=1)
+    tgtLbl1  := label.new(x2s, t1s, "⬡ T1 " + str.tostring(t1s, format.mintick), color=color.new(color.black, 100), textcolor=color.new(cShort, 30), style=label.style_label_left, size=size.tiny)
+    tgtLine2 := line.new(bar_index, t2s, x2s, t2s, color=color.new(cShort, 50), style=line.style_dashed, width=1)
+    tgtLbl2  := label.new(x2s, t2s, "⬡ T2 " + str.tostring(t2s, format.mintick), color=color.new(color.black, 100), textcolor=color.new(cShort, 30), style=label.style_label_left, size=size.tiny)
+
+if exitSignal
+    line.delete(tgtLine1)
+    line.delete(tgtLine2)
+    label.delete(tgtLbl1)
+    label.delete(tgtLbl2)
+    tgt1 := na
+    tgt2 := na
+
+// ═══════════════════════════════════ DASHBOARD ═══════════════════════════════
+var table dash = na
+if i_showDash and na(dash)
+    dash := table.new(position.top_right, 2, 14, bgcolor=color.new(#0d1117, 0), border_width=1, border_color=color.new(#30363d, 0), frame_width=2, frame_color=color.new(cLong, 50))
+
+if i_showDash and barstate.islast and not na(dash)
+    for clrIdx = 0 to 13
+        table.cell(dash, 0, clrIdx, "", text_color=color.silver, text_size=size.small, bgcolor=color.new(#161b22, 0))
+        table.cell(dash, 1, clrIdx, "", text_color=color.silver, text_size=size.small, bgcolor=color.new(#161b22, 0))
+
+    int r = 0
+    table.cell(dash, 0, r, "⬡ PSE v15", text_color=cLong, text_size=size.small, bgcolor=color.new(#161b22, 0))
+    table.merge_cells(dash, 0, r, 1, r)
+    r += 1
+
+    color posClr = posDir == "long" ? cLong : posDir == "short" ? cShort : color.gray
+    table.cell(dash, 0, r, "Pos:", text_color=color.silver, text_size=size.small, bgcolor=color.new(#161b22, 0))
+    table.cell(dash, 1, r, posDir == "long" ? "LONG" : posDir == "short" ? "SHORT" : "FLAT", text_color=posClr, text_size=size.small, bgcolor=color.new(#161b22, 0))
+    r += 1
+
+    if posDir != "none" and not na(entryPrice)
+        float dPnL = posDir == "long" ? (close - entryPrice) / entryPrice * 100.0 : (entryPrice - close) / entryPrice * 100.0
+        table.cell(dash, 0, r, "P&L:", text_color=color.silver, text_size=size.small, bgcolor=color.new(#161b22, 0))
+        table.cell(dash, 1, r, str.tostring(dPnL, "#.##") + "%", text_color=dPnL >= 0 ? cLong : cShort, text_size=size.small, bgcolor=color.new(#161b22, 0))
+        r += 1
+        table.cell(dash, 0, r, "Score:", text_color=color.silver, text_size=size.small, bgcolor=color.new(#161b22, 0))
+        table.cell(dash, 1, r, str.tostring(entrySc) + " " + getGrade(entrySc), text_color=color.white, text_size=size.small, bgcolor=color.new(#161b22, 0))
+        r += 1
+        if not na(tgt1) and not na(tgt2)
+            table.cell(dash, 0, r, "T1:", text_color=color.silver, text_size=size.small, bgcolor=color.new(#161b22, 0))
+            table.cell(dash, 1, r, str.tostring(tgt1, format.mintick), text_color=cTgt, text_size=size.small, bgcolor=color.new(#161b22, 0))
+            r += 1
+            table.cell(dash, 0, r, "T2:", text_color=color.silver, text_size=size.small, bgcolor=color.new(#161b22, 0))
+            table.cell(dash, 1, r, str.tostring(tgt2, format.mintick), text_color=cTgt, text_size=size.small, bgcolor=color.new(#161b22, 0))
+            r += 1
+        if not na(trailLevel)
+            table.cell(dash, 0, r, "Trail:", text_color=color.silver, text_size=size.small, bgcolor=color.new(#161b22, 0))
+            table.cell(dash, 1, r, str.tostring(trailLevel, format.mintick), text_color=cTgt, text_size=size.small, bgcolor=color.new(#161b22, 0))
+            r += 1
+        table.cell(dash, 0, r, "Bars:", text_color=color.silver, text_size=size.small, bgcolor=color.new(#161b22, 0))
+        table.cell(dash, 1, r, str.tostring(bar_index - nz(entryBar, bar_index)) + "/" + str.tostring(timeout), text_color=color.white, text_size=size.small, bgcolor=color.new(#161b22, 0))
+        r += 1
+
+    string htfStr = htfActive ? (htfTrend > 0 ? "↑ BULL" : htfTrend < 0 ? "↓ BEAR" : "— FLAT") : "OFF"
+    color htfClr = htfTrend > 0 ? cLong : htfTrend < 0 ? cShort : color.gray
+    table.cell(dash, 0, r, "HTF:", text_color=color.silver, text_size=size.small, bgcolor=color.new(#161b22, 0))
+    table.cell(dash, 1, r, htfStr, text_color=htfActive ? htfClr : color.gray, text_size=size.small, bgcolor=color.new(#161b22, 0))
+    r += 1
+
+    table.cell(dash, 0, r, "ADX:", text_color=color.silver, text_size=size.small, bgcolor=color.new(#161b22, 0))
+    table.cell(dash, 1, r, str.tostring(adxVal, "#.#") + (adxTrending ? " ★" : " ☆"), text_color=adxTrending ? color.white : color.gray, text_size=size.small, bgcolor=color.new(#161b22, 0))
+    r += 1
+
+    table.cell(dash, 0, r, "ST:", text_color=color.silver, text_size=size.small, bgcolor=color.new(#161b22, 0))
+    table.cell(dash, 1, r, stDir == 1 ? "BULL" : "BEAR", text_color=stDir == 1 ? cLong : cShort, text_size=size.small, bgcolor=color.new(#161b22, 0))
+    r += 1
+
+    table.cell(dash, 0, r, "RSI:", text_color=color.silver, text_size=size.small, bgcolor=color.new(#161b22, 0))
+    table.cell(dash, 1, r, str.tostring(rsi14, "#.#"), text_color=rsi14 < 30 ? cLong : rsi14 > 70 ? cShort : color.white, text_size=size.small, bgcolor=color.new(#161b22, 0))
+    r += 1
+
+    float winRate = totalTrades > 0 ? wins * 100.0 / totalTrades : 0.0
+    float pf = sumLosses > 0 ? sumWins / sumLosses : sumWins > 0 ? 99.9 : 0.0
+
+    table.cell(dash, 0, r, "W/L:", text_color=color.silver, text_size=size.small, bgcolor=color.new(#161b22, 0))
+    table.cell(dash, 1, r, str.tostring(wins) + "/" + str.tostring(losses) + " (" + str.tostring(winRate, "#.#") + "%)", text_color=winRate >= 50 ? cLong : cShort, text_size=size.small, bgcolor=color.new(#161b22, 0))
+    r += 1
+
+    table.cell(dash, 0, r, "PF:", text_color=color.silver, text_size=size.small, bgcolor=color.new(#161b22, 0))
+    table.cell(dash, 1, r, str.tostring(pf, "#.##"), text_color=pf >= 1.0 ? cLong : cShort, text_size=size.small, bgcolor=color.new(#161b22, 0))
+
+// ═══════════════════════════════════ ALERTS ══════════════════════════════════
+alertcondition(sigBuy,  title="⬡ Long",  message="⬡ PSE: Long · {{ticker}} {{interval}}")
+alertcondition(sigSell, title="⬡ Short", message="⬡ PSE: Short · {{ticker}} {{interval}}")
+alertcondition(exitSignal and exitReason == "stop", title="⬡ Stop", message="⬡ PSE: Stop · {{ticker}}")
+alertcondition(exitSignal and exitReason == "trail", title="⬡ Trail", message="⬡ PSE: Trail · {{ticker}}")
+
+if i_alerts and sigBuy
+    alert("⬡ PSE Long · " + syminfo.ticker + " " + timeframe.period + " · sc:" + str.tostring(pendBuyScore) + " " + getGrade(pendBuyScore), alert.freq_once_per_bar_close)
+if i_alerts and sigSell
+    alert("⬡ PSE Short · " + syminfo.ticker + " " + timeframe.period + " · sc:" + str.tostring(pendSellScore) + " " + getGrade(pendSellScore), alert.freq_once_per_bar_close)
+
+plot(hasBuyScore  ? buyScore  : na, "Buy Score",  display=display.none)
+plot(hasSellScore ? sellScore : na, "Sell Score", display=display.none)
