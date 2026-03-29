@@ -1,0 +1,161 @@
+// This Pine Script™ is subject to the terms of the Mozilla Public License 2.0
+// https://mozilla.org/MPL/2.0/
+// © Crypto Signal Pro
+
+//@version=5
+indicator("Crypto Signal Pro [4H]", overlay=true, max_labels_count=500, max_bars_back=5000)
+
+// ─── EMA SETTINGS ────────────────────────────────────────
+string grpEma   = "EMA Settings"
+int fastEmaLen  = input.int(9,   "Fast EMA Length",  minval=1, group=grpEma)
+int slowEmaLen  = input.int(21,  "Slow EMA Length",  minval=1, group=grpEma)
+int trendEmaLen = input.int(200, "Trend EMA Length",  minval=1, group=grpEma)
+
+// ─── MACD SETTINGS ───────────────────────────────────────
+string grpMacd    = "MACD Settings"
+int macdFastLen   = input.int(12, "Fast Length",   minval=1, group=grpMacd)
+int macdSlowLen   = input.int(26, "Slow Length",   minval=1, group=grpMacd)
+int macdSignalLen = input.int(9,  "Signal Length", minval=1, group=grpMacd)
+
+// ─── RSI SETTINGS ────────────────────────────────────────
+string grpRsi     = "RSI Settings"
+int rsiLen        = input.int(14, "RSI Length",      minval=1,  group=grpRsi)
+int rsiOverbought = input.int(70, "RSI Overbought",  minval=50, maxval=100, group=grpRsi)
+int rsiOversold   = input.int(30, "RSI Oversold",    minval=0,  maxval=50,  group=grpRsi)
+
+// ─── VOLUME SETTINGS ─────────────────────────────────────
+string grpVol    = "Volume Settings"
+bool useVolFilter = input.bool(true, "Use Volume Filter", group=grpVol)
+int volLen       = input.int(20,     "Volume MA Length",  minval=1,   group=grpVol)
+float volMult    = input.float(1.0,  "Volume Multiplier", minval=0.5, step=0.1, group=grpVol)
+
+// ─── SL / TP SETTINGS ───────────────────────────────────
+string grpSlTp      = "Stop Loss / Take Profit"
+bool showSlTp       = input.bool(true,  "Show SL/TP Levels",   group=grpSlTp)
+int atrLen          = input.int(14,     "ATR Length",           minval=1,   group=grpSlTp)
+float slMultiplier  = input.float(1.5,  "SL ATR Multiplier",   minval=0.5, step=0.1, group=grpSlTp)
+float tpMultiplier  = input.float(2.5,  "TP ATR Multiplier",   minval=0.5, step=0.1, group=grpSlTp)
+
+// ─── DISPLAY SETTINGS ───────────────────────────────────
+string grpDisp       = "Display"
+bool showTrendBg     = input.bool(true,  "Show Trend Background",  group=grpDisp)
+bool showInfoTable   = input.bool(true,  "Show Info Table",        group=grpDisp)
+
+// ═══════════════════════════════════════════════════════════
+// CALCULATIONS
+// ═══════════════════════════════════════════════════════════
+
+// EMA calculations
+float fastEma  = ta.ema(close, fastEmaLen)
+float slowEma  = ta.ema(close, slowEmaLen)
+float trendEma = ta.ema(close, trendEmaLen)
+
+// MACD calculations
+[macdLine, signalLine, histLine] = ta.macd(close, macdFastLen, macdSlowLen, macdSignalLen)
+
+// RSI calculation
+float rsiValue = ta.rsi(close, rsiLen)
+
+// Volume calculation
+float volMa = ta.sma(volume, volLen)
+bool volOk  = useVolFilter ? volume > volMa * volMult : true
+
+// ATR calculation
+float atrValue = ta.atr(atrLen)
+
+// ═══════════════════════════════════════════════════════════
+// SIGNAL CONDITIONS
+// ═══════════════════════════════════════════════════════════
+
+// EMA crossover detection
+bool emaCrossUp   = ta.crossover(fastEma, slowEma)
+bool emaCrossDown = ta.crossunder(fastEma, slowEma)
+
+// Trend direction via 200 EMA
+bool bullTrend = close > trendEma
+bool bearTrend = close < trendEma
+
+// MACD momentum confirmation
+bool macdBullish = macdLine > signalLine
+bool macdBearish = macdLine < signalLine
+
+// RSI filter: avoid overbought buys and oversold sells
+bool rsiAllowBuy  = rsiValue < rsiOverbought
+bool rsiAllowSell = rsiValue > rsiOversold
+
+// Final signals — gated by barstate.isconfirmed to prevent repainting
+bool buySignal  = barstate.isconfirmed and emaCrossUp   and bullTrend and macdBullish and rsiAllowBuy  and volOk
+bool sellSignal = barstate.isconfirmed and emaCrossDown and bearTrend and macdBearish and rsiAllowSell and volOk
+
+// ═══════════════════════════════════════════════════════════
+// SL / TP LEVEL TRACKING
+// ═══════════════════════════════════════════════════════════
+
+var float slLevel = na
+var float tpLevel = na
+
+if buySignal
+    slLevel := close - atrValue * slMultiplier
+    tpLevel := close + atrValue * tpMultiplier
+
+if sellSignal
+    slLevel := close + atrValue * slMultiplier
+    tpLevel := close - atrValue * tpMultiplier
+
+// ═══════════════════════════════════════════════════════════
+// PLOTTING
+// ═══════════════════════════════════════════════════════════
+
+// EMA lines
+plot(fastEma,  "Fast EMA (9)",   color=color.new(color.blue,   0), linewidth=1)
+plot(slowEma,  "Slow EMA (21)",  color=color.new(color.orange,  0), linewidth=1)
+plot(trendEma, "Trend EMA (200)", color=color.new(color.gray,  50), linewidth=2)
+
+// Buy & Sell shapes
+plotshape(buySignal,  title="Buy Signal",  location=location.belowbar, style=shape.labelup,   color=color.new(color.green, 0), textcolor=color.white, text="BUY",  size=size.normal)
+plotshape(sellSignal, title="Sell Signal", location=location.abovebar, style=shape.labeldown, color=color.new(color.red,   0), textcolor=color.white, text="SELL", size=size.normal)
+
+// SL / TP levels (linebr style so they appear only where defined)
+plot(showSlTp ? slLevel : na, "Stop Loss",   color=color.new(color.red,   30), style=plot.style_linebr, linewidth=1)
+plot(showSlTp ? tpLevel : na, "Take Profit", color=color.new(color.green, 30), style=plot.style_linebr, linewidth=1)
+
+// Trend background
+bgcolor(showTrendBg ? (bullTrend ? color.new(color.green, 95) : bearTrend ? color.new(color.red, 95) : na) : na, title="Trend Background")
+
+// ═══════════════════════════════════════════════════════════
+// ALERTS
+// ═══════════════════════════════════════════════════════════
+
+alertcondition(buySignal,  title="Buy Alert",  message="BUY Signal on {{ticker}} | Price: {{close}} | TF: {{interval}}")
+alertcondition(sellSignal, title="Sell Alert", message="SELL Signal on {{ticker}} | Price: {{close}} | TF: {{interval}}")
+
+// ═══════════════════════════════════════════════════════════
+// INFORMATION TABLE
+// ═══════════════════════════════════════════════════════════
+
+if showInfoTable and barstate.islast
+    var table infoTbl = table.new(position.top_right, 2, 7, bgcolor=color.new(color.black, 80), border_color=color.new(color.gray, 50), border_width=1)
+
+    table.cell(infoTbl, 0, 0, "Metric",    text_color=color.yellow, text_size=size.small, text_halign=text.align_left)
+    table.cell(infoTbl, 1, 0, "Value",     text_color=color.yellow, text_size=size.small, text_halign=text.align_right)
+
+    table.cell(infoTbl, 0, 1, "RSI",       text_color=color.white, text_size=size.small, text_halign=text.align_left)
+    color rsiClr = rsiValue > rsiOverbought ? color.red : rsiValue < rsiOversold ? color.green : color.white
+    table.cell(infoTbl, 1, 1, str.tostring(rsiValue, "#.##"), text_color=rsiClr, text_size=size.small, text_halign=text.align_right)
+
+    table.cell(infoTbl, 0, 2, "MACD Hist", text_color=color.white, text_size=size.small, text_halign=text.align_left)
+    float macdHist = macdLine - signalLine
+    color macdClr = macdHist >= 0 ? color.green : color.red
+    table.cell(infoTbl, 1, 2, str.tostring(macdHist, "#.####"), text_color=macdClr, text_size=size.small, text_halign=text.align_right)
+
+    table.cell(infoTbl, 0, 3, "Volume",    text_color=color.white, text_size=size.small, text_halign=text.align_left)
+    table.cell(infoTbl, 1, 3, volOk ? "Above Avg" : "Below Avg", text_color=volOk ? color.green : color.red, text_size=size.small, text_halign=text.align_right)
+
+    table.cell(infoTbl, 0, 4, "Trend",     text_color=color.white, text_size=size.small, text_halign=text.align_left)
+    table.cell(infoTbl, 1, 4, bullTrend ? "Bullish" : "Bearish", text_color=bullTrend ? color.green : color.red, text_size=size.small, text_halign=text.align_right)
+
+    table.cell(infoTbl, 0, 5, "ATR",       text_color=color.white, text_size=size.small, text_halign=text.align_left)
+    table.cell(infoTbl, 1, 5, str.tostring(atrValue, "#.####"), text_color=color.white, text_size=size.small, text_halign=text.align_right)
+
+    table.cell(infoTbl, 0, 6, "Timeframe", text_color=color.white, text_size=size.small, text_halign=text.align_left)
+    table.cell(infoTbl, 1, 6, timeframe.period, text_color=color.yellow, text_size=size.small, text_halign=text.align_right)
