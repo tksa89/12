@@ -1,0 +1,1336 @@
+//@version=6
+// © rzin
+// ═══════════════════════════════════════════════════════════════════════
+//  Harmonic Patterns — Structural Pivot Engine (v8.7 - Depth tightening: drop shallow S-layer on <=1h)
+// ═══════════════════════════════════════════════════════════════════════
+indicator("Harmonic Patterns", shorttitle = "Harmonic", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500, max_bars_back = 1500)
+
+// ═══════════════════════════════════════════════════════════
+//  0) الإدخالات
+// ═══════════════════════════════════════════════════════════
+const string G_ENG = "Harmonic  ▸  الهارمونيك"
+bool i_EngHarm = input.bool(true, "Harmonic  ·  الهارمونيك", group = G_ENG)
+
+const string G_PAT = "Patterns  ▸  النماذج (Harmonic)"
+bool i_Gartley   = input.bool(true, "Gartley  ·  جارتلي",         inline = "p1", group = G_PAT)
+bool i_Bat       = input.bool(true, "Bat  ·  الخفاش",            inline = "p1", group = G_PAT)
+bool i_AltBat    = input.bool(true, "Alt Bat  ·  الخفاش البديل",   inline = "p2", group = G_PAT)
+bool i_Butterfly = input.bool(true, "Butterfly  ·  الفراشة",       inline = "p2", group = G_PAT)
+bool i_Crab      = input.bool(true, "Crab  ·  الكابوريا",          inline = "p3", group = G_PAT)
+bool i_DeepCrab  = input.bool(true, "Deep Crab  ·  الكابوريا العميق", inline = "p3", group = G_PAT)
+bool i_Shark     = input.bool(true, "Shark  ·  القرش",             inline = "p4", group = G_PAT)
+
+bool i_BigPats   = input.bool(true, "النماذج الكبيرة", inline = "sz", group = G_PAT)
+bool i_SmallPats = input.bool(true, "النماذج الصغيرة", inline = "sz", group = G_PAT)
+
+const string G_VIS = "Style  ▸  المظهر (Harmonic)"
+color i_BullCol = input.color(#02987F, "Bull · إيجابي", inline = "col", group = G_VIS)
+color i_BearCol = input.color(#C71500, "Bear · سلبي", inline = "col", group = G_VIS)
+bool  i_ShowProj = input.bool(true, "Projection · الاستباقي", inline = "prj", group = G_VIS, tooltip = "رسم النموذج الاستباقي كاملاً عند تطابق XABC")
+color i_ProjCol  = input.color(#D8D8D8, "", inline = "prj", group = G_VIS)
+
+const bool i_ShowHit  = true
+const int  i_MaxPat   = 50
+const bool i_ShowTgts = true
+const string PRZ_TEXT = "PRZ"
+
+// ═══════════════════════════════════════════════════════════
+//  1) الأساس الرياضي
+// ═══════════════════════════════════════════════════════════
+const float TOL = 0.07
+// عتبة التداخل البنيوي: نموذجان يتشابكان بنيوياً فقط إذا تجاوز تداخل مستطيليهما
+// المحيطين هذه النسبة من مساحة الأصغر. عالية (شرط حذر) كي لا تُحذف نماذج متجاورة
+// مشروعة — تُطبَّق فقط بين نماذج نفس الحالة فلا تمسّ الاستباقي.
+const float STRUCT_OV_MIN = 0.70
+// عتبة الاحتواء الحجمي: إذا كانت مساحة النموذج الأكبر ÷ الأصغر تتجاوز هذه القيمة،
+// فهذا "نموذج كبير بداخله أصغر" (مستويات XABCD متباعدة) — يُسمح بتراكمهما ولا
+// يُطبَّق منع التشابك البنيوي، لأنهما يكمّلان بعضهما لا يكرّرانه.
+const float STRUCT_CONTAIN_MIN = 2.5
+
+const float C_LO  = 0.500
+const float C_HI  = 0.886
+const float SC_LO = 1.130
+const float SC_HI = 1.618
+const float TGT1_STD   = 0.382
+const float TGT2_STD   = 0.618
+const float TGT1_SHARK = 0.500
+const float TGT2_SHARK = 0.618
+
+const float ABCD_CD_MIN  = 0.50
+const float ABCD_CD_MAX  = 3.60
+const float B_MIN_RETR   = 0.200
+const float B_MAX_RETR   = 0.980
+const float LEG_MIN_FRAC = 0.10
+const float ABBC_TIME_MIN = 0.33
+
+// أعماق الكشف (فيبوناتشي، تبدأ 13 وأقصاها 55 — بحثياً النطاق الأمثل للهارمونيك).
+// عدد الطبقات النشطة يقلّ كلما كبر الفريم (وضوح أكبر، ازدحام أقل): الفريم الصغير
+// يستخدم 4 أعماق، والكبير أقل — عبر تعطيل الطبقات العليا (activeL/XL) حسب الفريم.
+const int KLS_XS_S = 13
+const int KLS_XS_M = 21
+const int KLS_XS_L = 34
+const int KLS_XS_XL = 55
+const int KLS_SM_S = 13
+const int KLS_SM_M = 21
+const int KLS_SM_L = 34
+const int KLS_SM_XL = 55
+const int KLS_MD_S = 13
+const int KLS_MD_M = 21
+const int KLS_MD_L = 34
+const int KLS_MD_XL = 55
+const int KLS_LG_S = 8
+const int KLS_LG_M = 13
+const int KLS_LG_L = 21
+const int KLS_LG_XL = 34
+const int KLS_HG_S = 8
+const int KLS_HG_M = 13
+const int KLS_HG_L = 21
+const int KLS_HG_XL = 34
+const int KR_S  = 2
+const int KR_M  = 2
+const int KR_L  = 2
+const int KR_XL = 2
+
+const int CAP_LINES   = 470
+const int CAP_LABELS  = 470
+const int CAP_BOXES   = 470
+const int COST_LINES  = 7
+const int COST_LABELS = 5
+const int SCAN_WINDOW = 10
+const int MAX_HIST    = 90
+const int PREX_WIN    = 90
+const int LOCK_HITS   = 10
+const int LEAD_HITS   = 5
+const int MAX_LIVE    = 55
+const int MIN_LEG_BARS     = 8
+const int MAX_PIV_L        = 60
+
+// ★ إزالة قيد الـ ATR من جذوره
+const float XA_MIN_PCT_ABS = 0.05
+const bool  USE_LOG        = true
+
+const int ST_LIVE  = 0
+const int ST_HIT   = 1
+const int ST_BREAK = 2
+const int MAX_FUT_BARS = 499
+
+const int   D_GAP_BARS   = 10
+const float PRE_ACT_FRAC   = 0.94
+
+const int PRZ_MIN_BARS = 5
+const int PRZ_MAX_BARS = 24
+const int TGT_MIN_BARS = 10
+const int TGT_MAX_BARS = 28
+const int TARGET_GAP_BARS = 2
+
+const int    PLOT_WIDTH = 1
+plotStyle = line.style_dotted
+const int    TR_ZONE_BG = 90
+const int    HIST_TR    = 70
+
+// ═══════════════════════════════════════════════════════════
+//  2) التهيئة والمقاييس التكيّفية
+// ═══════════════════════════════════════════════════════════
+int _tfSec = int(math.max(nz(timeframe.in_seconds(timeframe.period), 3600), 1))
+// اختيار أعماق الكشف حسب مجموعة الفريم (حدود قاطعة بلا تداخل ولا فجوة):
+//   دقيقة: ≤ 15m (900s) — صغيرة: 30m..1h (≤ 3600s) — متوسطة: 2h..6h (≤ 21600s)
+//   كبيرة: 8h..1D (≤ 86400s) — ضخمة: > 1D (2D,3D,W...). كلها فيبوناتشي.
+// تُحسب مرّة (simple int) لتوافق شرط ta.pivot*.
+bool _tfXSmall = _tfSec <= 900
+bool _tfSmall  = _tfSec > 900   and _tfSec <= 3600
+bool _tfMed    = _tfSec > 3600  and _tfSec <= 21600
+bool _tfLarge  = _tfSec > 21600 and _tfSec <= 86400
+bool _tfHuge   = _tfSec > 86400
+
+// عدد الطبقات النشطة يقلّ مع كبر الفريم: ≤6h → 4 طبقات، 8h..1D → 3 (بلا XL)،
+// >1D → طبقتان (بلا L و XL). مربوطة بخياري النماذج الصغيرة/الكبيرة.
+// تشديد عبر العُمق (الفريمات الصغيرة ≤ 1h): إسقاط الطبقة الأضحل S (عمق 13) حيث
+// الضوضاء أعلى، فتبدأ نماذج هذه الفريمات من عمق 21 (M) وما فوق. بقية الفريمات كما هي.
+bool activeS  = i_SmallPats and not (_tfXSmall or _tfSmall)
+bool activeM  = i_SmallPats
+bool activeL  = i_BigPats and not _tfHuge
+bool activeXL = i_BigPats and not _tfLarge and not _tfHuge
+
+int KL_S_S  = _tfXSmall ? KLS_XS_S  : _tfSmall ? KLS_SM_S  : _tfMed ? KLS_MD_S  : _tfLarge ? KLS_LG_S  : KLS_HG_S
+int KL_M_S  = _tfXSmall ? KLS_XS_M  : _tfSmall ? KLS_SM_M  : _tfMed ? KLS_MD_M  : _tfLarge ? KLS_LG_M  : KLS_HG_M
+int KL_L_S  = _tfXSmall ? KLS_XS_L  : _tfSmall ? KLS_SM_L  : _tfMed ? KLS_MD_L  : _tfLarge ? KLS_LG_L  : KLS_HG_L
+int KL_XL_S = _tfXSmall ? KLS_XS_XL : _tfSmall ? KLS_SM_XL : _tfMed ? KLS_MD_XL : _tfLarge ? KLS_LG_XL : KLS_HG_XL
+
+// أقصى امتداد زمني للنموذج ثابت تقريباً عبر كل الفريمات: ~500 يوم.
+// SCAN_SPAN بالشموع = الهدف الزمني ÷ زمن الشمعة، مقيّداً بين 90 و1200
+// (السقف 1200 يحمي max_bars_back=1500 والفريمات الصغيرة؛ الأرضية 90 تُبقي
+//  مجالاً كافياً لبناء XABCD على الفريمات الضخمة). يبقى simple int لحدود الحلقات.
+const int SPAN_TARGET_SEC = 43200000
+int SCAN_SPAN   = int(math.max(90.0, math.min(1200.0, math.round(float(SPAN_TARGET_SEC) / float(_tfSec)))))
+int MAX_CD_BARS = SCAN_SPAN - 1
+
+// ★ تعديل اعتماد النسبة وتجريدها من الـ ATR تماماً
+float _minXAeff = XA_MIN_PCT_ABS
+
+int g_msPerBar = int(math.max(nz(timeframe.in_seconds(timeframe.period), 60), 60)) * 1000
+var array<int> g_update = array.new<int>(1, 0)
+var array<bool> patFlag = array.new<bool>(2, false)
+
+// ═══════════════════════════════════════════════════════════
+//  3) الأنواع والمخازن
+// ═══════════════════════════════════════════════════════════
+type Pivot
+    float price
+    int   bar
+    int   dir
+    int   t
+
+type Pattern
+    int    patId
+    bool   isBull
+    float  pX
+    float  pA
+    float  pB
+    float  pC
+    int    tX
+    int    tA
+    int    tB
+    int    tC
+    int    bC
+    float  przLo
+    float  przHi
+    int    layer
+    float  score
+    int    status
+    float  pD
+    int    tD
+    int    tActivate
+    int    layerMask
+
+var array<Pivot> pvS  = array.new<Pivot>()
+var array<Pivot> pvM  = array.new<Pivot>()
+var array<Pivot> pvL  = array.new<Pivot>()
+var array<Pivot> pvXL = array.new<Pivot>()
+var array<Pattern> fcHist = array.new<Pattern>()
+var array<Pattern> fcBuf  = array.new<Pattern>()
+var array<Pattern> fcLive = array.new<Pattern>()
+
+type PatSpec
+    string name
+    bool   on
+    bool   gartley
+    bool   crabFam
+    bool   extC
+    bool   zoneBox
+    float  bLo
+    float  bHi
+    float  bTol
+    float  bTolLo
+    float  bTolHi
+    float  cLo
+    float  cHi
+    float  bcLo
+    float  bcHi
+    float  cdLo
+    float  cdHi
+    float  dLo
+    float  dHi
+    float  dTol
+    float  dPrz
+
+var array<PatSpec> SPECS = array.new<PatSpec>()
+if array.size(SPECS) == 0
+    array.push(SPECS, PatSpec.new(name = "Gartley",   on = i_Gartley,   gartley = true,  crabFam = false, extC = false, zoneBox = false, bLo = 0.618, bHi = 0.618, bTol = 0.03, bTolLo = 0.03, bTolHi = 0.03, cLo = C_LO,  cHi = C_HI,  bcLo = 1.130, bcHi = 1.618, cdLo = 1.000, cdHi = 1.270, dLo = 0.786, dHi = 0.886, dTol = 0.03, dPrz = 0.786))
+    array.push(SPECS, PatSpec.new(name = "Bat",       on = i_Bat,       gartley = false, crabFam = false, extC = false, zoneBox = false, bLo = 0.382, bHi = 0.500, bTol = 0.05, bTolLo = 0.05, bTolHi = 0.05, cLo = C_LO,  cHi = C_HI,  bcLo = 1.618, bcHi = 2.618, cdLo = 1.000, cdHi = 1.618, dLo = 0.886, dHi = 1.000, dTol = 0.05, dPrz = 1.000))
+    array.push(SPECS, PatSpec.new(name = "Alt Bat",   on = i_AltBat,    gartley = false, crabFam = false, extC = false, zoneBox = false, bLo = 0.382, bHi = 0.382, bTol = 0.03, bTolLo = 0.03, bTolHi = 0.00, cLo = C_LO,  cHi = C_HI,  bcLo = 2.000, bcHi = 3.618, cdLo = 1.618, cdHi = 1.618, dLo = 0.886, dHi = 1.130, dTol = 0.05, dPrz = 1.130))
+    array.push(SPECS, PatSpec.new(name = "Butterfly", on = i_Butterfly, gartley = false, crabFam = false, extC = false, zoneBox = false, bLo = 0.786, bHi = 0.786, bTol = 0.03, bTolLo = 0.03, bTolHi = 0.03, cLo = C_LO,  cHi = C_HI,  bcLo = 1.618, bcHi = 2.240, cdLo = 1.000, cdHi = 1.270, dLo = 1.272, dHi = 1.272, dTol = 0.03, dPrz = 1.272))
+    array.push(SPECS, PatSpec.new(name = "Crab",      on = i_Crab,      gartley = false, crabFam = true,  extC = false, zoneBox = true,  bLo = 0.382, bHi = 0.618, bTol = 0.04, bTolLo = 0.00, bTolHi = 0.05, cLo = C_LO,  cHi = C_HI,  bcLo = 2.618, bcHi = 3.618, cdLo = 1.000, cdHi = 1.618, dLo = 1.618, dHi = 1.902, dTol = 0.05, dPrz = 1.902))
+    array.push(SPECS, PatSpec.new(name = "Deep Crab", on = i_DeepCrab,  gartley = false, crabFam = true,  extC = false, zoneBox = true,  bLo = 0.886, bHi = 0.886, bTol = 0.05, bTolLo = 0.00, bTolHi = 0.05, cLo = C_LO,  cHi = C_HI,  bcLo = 2.000, bcHi = 3.618, cdLo = 1.000, cdHi = 1.618, dLo = 1.618, dHi = 1.902, dTol = 0.05, dPrz = 1.902))
+    array.push(SPECS, PatSpec.new(name = "Shark",     on = i_Shark,     gartley = false, crabFam = false, extC = true,  zoneBox = true,  bLo = 0.382, bHi = 0.618, bTol = 0.04, bTolLo = 0.04, bTolHi = 0.04, cLo = SC_LO, cHi = SC_HI, bcLo = 1.618, bcHi = 2.240, cdLo = 0.000, cdHi = 0.000, dLo = 0.886, dHi = 1.130, dTol = 0.00, dPrz = 1.130))
+
+// ═══════════════════════════════════════════════════════════
+//  4) الدوال المساعدة
+// ═══════════════════════════════════════════════════════════
+fmtShort(float v) =>
+    float  a    = math.abs(v)
+    string sign = v < 0.0 ? "-" : ""
+    float  div  = a >= 1e9 ? 1e9 : a >= 1e6 ? 1e6 : a >= 1e3 ? 1e3 : 1.0
+    string unit = a >= 1e9 ? "B" : a >= 1e6 ? "M" : a >= 1e3 ? "K" : ""
+    string fmt  = a >= 1e3 ? "#.#" : a >= 100.0 ? "#" : a >= 1.0 ? "#.##" : a >= 0.01 ? "#.####" : a >= 0.0001 ? "#.######" : "#.########"
+    sign + str.tostring(a / div, fmt) + unit
+
+fibLevel(float pFrom, float pTo, float ratio) =>
+    bool useL = USE_LOG and pFrom > 0.0 and pTo > 0.0
+    float sFrom = useL ? math.log(pFrom) : pFrom
+    float sTo   = useL ? math.log(pTo)   : pTo
+    float lvl   = sTo + (sFrom - sTo) * ratio
+    useL ? math.exp(lvl) : lvl
+
+fibRatio(float a, float b, float ref1, float ref2) =>
+    bool useL = USE_LOG and a > 0.0 and b > 0.0 and ref1 > 0.0 and ref2 > 0.0
+    float num = useL ? math.abs(math.log(b)    - math.log(a))    : math.abs(b - a)
+    float ref = useL ? math.abs(math.log(ref2) - math.log(ref1)) : math.abs(ref2 - ref1)
+    ref > 0.0 ? num / ref : 0.0
+
+inRangeB(float v, float mn, float mx, float loTol, float hiTol) =>
+    v >= mn * (1.0 - loTol) and v <= mx * (1.0 + hiTol)
+
+abcdLevel(float pA, float pB, float pC, float mult) =>
+    bool useL = USE_LOG and pA > 0.0 and pB > 0.0 and pC > 0.0
+    float sA = useL ? math.log(pA) : pA
+    float sB = useL ? math.log(pB) : pB
+    float sC = useL ? math.log(pC) : pC
+    float lvl = sC + (sB - sA) * mult
+    useL ? math.exp(lvl) : lvl
+
+ratioQual(float v, float mn, float mx, float tol) =>
+    float ctr  = (mn + mx) / 2.0
+    float half = (mx - mn) / 2.0 + ctr * tol
+    float q    = 1.0 - math.abs(v - ctr) / half
+    math.max(0.0, math.min(1.0, q))
+
+layerBit(int layerNum) =>
+    layerNum == 1 ? 1 : layerNum == 2 ? 2 : layerNum == 3 ? 4 : 8
+
+maskHas(int mask, int layerNum) =>
+    int b = layerBit(layerNum)
+    int(math.floor(float(mask) / float(b))) % 2 == 1
+
+maskCount(int mask) =>
+    int n = 0
+    for ln = 1 to 4
+        if maskHas(mask, ln)
+            n += 1
+    n
+
+// ═══════════════════════════════════════════════════════════
+//  5) الاشتقاقات الرياضية
+// ═══════════════════════════════════════════════════════════
+dBaseOf(bool extC, float pA, float pC) => extC ? pC : pA
+
+projTime(int tB, int tC) =>
+    // امتداد D الأفقي = بُعد واضح عن C (نسبة من طول BC) بحدّ أدنى مرئي ثابت،
+    // فلا يلتصق بـ C ولا يمتدّ بعيداً يميناً. السقف = بُعد مماثل عن الشمعة الحالية.
+    int gapMin = D_GAP_BARS * g_msPerBar
+    int cdSpan = math.max(int(float(tC - tB) * 0.30), gapMin)
+    int(math.min(tC + cdSpan, time + gapMin))
+
+legRatios(float pX, float pA, float pB, float pC, float pXD, bool extC) =>
+    float dBase   = dBaseOf(extC, pA, pC)
+    float rCD     = fibRatio(pC, pXD, pA, pB)
+    float rXD     = fibRatio(dBase, pXD, pX, dBase)
+    float rBCproj = fibRatio(pC, pXD, pB, pC)
+    [rCD, rXD, rBCproj]
+
+legsValid(PatSpec s, float rCD, float rXD, float rBCproj, bool checkD) =>
+    bool okXD     = not checkD or inRangeB(rXD, s.dLo, s.dHi, s.dTol, s.dTol)
+    bool okCDdist = not checkD or s.extC or (rCD >= ABCD_CD_MIN and rCD <= ABCD_CD_MAX)
+    bool softBCproj = s.bcHi > 0.0 and inRangeB(rBCproj, s.bcLo, s.bcHi, TOL, TOL)
+    bool okImpulse = not checkD or not s.extC or softBCproj
+    okXD and okCDdist and okImpulse
+
+przZone(PatSpec s, float pX, float pA, float pB, float pC) =>
+    bool isUp = pA > pX
+    float dBase = dBaseOf(s.extC, pA, pC)
+    bool deepG = false
+    if s.gartley and s.cdHi > 0.0
+        float dStd   = fibLevel(pX, pA, 0.786)
+        float cdDeep = abcdLevel(pA, pB, pC, s.cdLo)
+        deepG := isUp ? cdDeep < dStd : cdDeep > dStd
+    float bcHiEff = deepG ? 2.618 : s.bcHi
+    float dHiPrz = deepG ? 0.886 : s.dPrz
+    float x1 = fibLevel(pX, dBase, s.dLo)
+    float x2 = fibLevel(pX, dBase, dHiPrz)
+    float zLo = math.min(x1, x2)
+    float zHi = math.max(x1, x2)
+    float eLo = zLo
+    float eHi = zHi
+    float l1 = s.bcHi > 0.0 ? fibLevel(pB, pC, s.bcLo) : na
+    float l2 = s.bcHi > 0.0 ? fibLevel(pB, pC, bcHiEff) : na
+    float l3 = s.cdHi > 0.0 ? abcdLevel(pA, pB, pC, s.cdLo) : na
+    float l4 = s.cdHi > 0.0 ? abcdLevel(pA, pB, pC, s.cdHi) : na
+    float l5 = s.bcHi > 0.0 and bcHiEff < 2.0 ? fibLevel(pB, pC, 2.0) : na
+    array<float> lvls = array.from(l1, l2, l3, l4, l5)
+    int density = 1
+    for v in lvls
+        if not na(v) and v >= eLo and v <= eHi
+            if not s.extC
+                zLo := math.min(zLo, v)
+                zHi := math.max(zHi, v)
+            density += 1
+    if density == 1 and math.abs(zHi - zLo) <= syminfo.mintick
+        float pad = fibLevel(pX, dBase, dHiPrz + 0.03)
+        zLo := math.min(zLo, pad)
+        zHi := math.max(zHi, pad)
+    if s.extC
+        density := math.max(density, 2)
+    [zLo, zHi, density]
+
+seqOk(int dX, int dA, int dB, int dC, bool isBull) => isBull ? (dX == -1 and dA == 1 and dB == -1 and dC == 1) : (dX == 1 and dA == -1 and dB == 1 and dC == -1)
+
+bRetrOk(float pX, float pA, float pB) =>
+    float xa = math.abs(pA - pX)
+    bool ok = false
+    if xa > 0.0
+        float r = math.abs(pA - pB) / xa
+        ok := r >= B_MIN_RETR and r <= B_MAX_RETR
+    ok
+
+legSymOk(float pX, float pA, float pB, float pC) =>
+    float lXA = math.abs(pA - pX)
+    float lAB = math.abs(pB - pA)
+    float lBC = math.abs(pC - pB)
+    float lMax = math.max(lXA, math.max(lAB, lBC))
+    float lMin = math.min(lXA, math.min(lAB, lBC))
+    lMax > 0.0 and (lMin / lMax) >= LEG_MIN_FRAC
+
+abBcTimeOk(int bA, int bB, int bC) =>
+    float tAB = float(math.max(bB - bA, 1))
+    float tBC = float(math.max(bC - bB, 1))
+    float tMax = math.max(tAB, tBC)
+    float tMin = math.min(tAB, tBC)
+    tMax > 0.0 and (tMin / tMax) >= ABBC_TIME_MIN
+
+scoreCalc(float qB, float qC, float qD, int density) =>
+    float qGeo = math.pow(math.max(qB, 0.0) * math.max(qC, 0.0) * math.max(qD, 0.0), 1.0 / 3.0)
+    float confluenceBoost = 1.0 + float(density - 1) * TOL
+    qGeo * confluenceBoost
+
+projScore(float qB, float qC, int density) =>
+    float qGeo = math.sqrt(math.max(qB, 0.0) * math.max(qC, 0.0))
+    qGeo * (1.0 + float(density - 1) * TOL)
+
+structOk(int bX, int bA, int bB, int bC, float pX, float pA, float pB, float pC, bool isBull, bool extC) =>
+    bool ok = true
+    int oX = int(bar_index - bX)
+    int oC = int(bar_index - bC)
+    int preWin = int(math.min(math.max(bA - bX, MIN_LEG_BARS), PREX_WIN))
+    int oFar  = int(math.min(math.min(oX + preWin, SCAN_SPAN - 1), bar_index))
+    float cap = extC ? pC : pA
+    float eps = syminfo.mintick
+    if oX >= SCAN_SPAN or oC < 0 or oX < oC
+        ok := false
+    else
+        for off = oFar to oC
+            int b = bar_index - off
+            if b < bX
+                if isBull ? (low[off] < pX - eps) : (high[off] > pX + eps)
+                    ok := false
+                    break
+            else if isBull
+                if high[off] > cap + eps or low[off] < pX - eps
+                    ok := false
+                    break
+                if b >= bX and b <= bB and high[off] > pA + eps
+                    ok := false
+                    break
+                if b > bA and b < bC and low[off] < pB - eps
+                    ok := false
+                    break
+                if b > bB and high[off] > pC + eps
+                    ok := false
+                    break
+            else
+                if low[off] < cap - eps or high[off] > pX + eps
+                    ok := false
+                    break
+                if b >= bX and b <= bB and low[off] < pA - eps
+                    ok := false
+                    break
+                if b > bA and b < bC and high[off] > pB + eps
+                    ok := false
+                    break
+                if b > bB and low[off] < pC - eps
+                    ok := false
+                    break
+    ok
+
+priceBeyondX(int bC, float pX, bool isBull) =>
+    bool beyond = false
+    float eps = syminfo.mintick
+    int offC = int(math.max(0, bar_index - bC))
+    if offC >= 1 and offC < SCAN_SPAN
+        for off = offC - 1 to 0
+            if isBull ? (low[off] < pX - eps) : (high[off] > pX + eps)
+                beyond := true
+                break
+    beyond
+
+scanFromC(int bC, float capLevel, float przLow, float przHigh, float preActLvl, bool isBull) =>
+    int   tBar    = -1
+    int   tTime   = 0
+    float tPrice  = na
+    bool  isValid = true
+    bool  ftDone  = false
+    float pLo = math.min(przLow, przHigh)
+    float pHi = math.max(przLow, przHigh)
+    float eps = syminfo.mintick
+    int   offC = int(math.max(0, bar_index - bC))
+    if offC >= 1 and offC < SCAN_SPAN
+        for off = offC - 1 to 0
+            if not ftDone
+                if isBull ? (high[off] > capLevel) : (low[off] < capLevel)
+                    isValid := false
+                    ftDone  := true
+                else if isBull ? (low[off] <= preActLvl) : (high[off] >= preActLvl)
+                    tBar   := bar_index - off
+                    tTime  := time[off]
+                    tPrice := isBull ? math.max(low[off], pLo) : math.min(high[off], pHi)
+                    ftDone := true
+                else if isBull ? (close[off] < pLo - eps) : (close[off] > pHi + eps)
+                    isValid := false
+                    ftDone  := true
+            if ftDone
+                break
+    [tBar, tPrice, tTime, isValid]
+
+applyPivot(array<Pivot> arr, float p, int pBar, int pTime, int d) =>
+    bool born = false
+    float eps = syminfo.mintick
+    if array.size(arr) == 0
+        array.unshift(arr, Pivot.new(p, pBar, d, pTime))
+        born := true
+    else
+        Pivot last = array.get(arr, 0)
+        if pBar == last.bar
+            if d == last.dir
+                bool moreExtremeSameBar = d == 1 ? p > last.price + eps : p < last.price - eps
+                if moreExtremeSameBar
+                    array.set(arr, 0, Pivot.new(p, pBar, d, pTime))
+                    born := true
+        else if d == last.dir
+            bool moreExtreme = d == 1 ? p > last.price + eps : p < last.price - eps
+            if moreExtreme
+                array.set(arr, 0, Pivot.new(p, pBar, d, pTime))
+                born := true
+        else
+            array.unshift(arr, Pivot.new(p, pBar, d, pTime))
+            born := true
+    while array.size(arr) > MAX_PIV_L
+        array.pop(arr)
+    born
+
+fractalSwing(array<Pivot> arr, float ph, float pl, int KR) =>
+    bool born = false
+    int  pBar  = bar_index - KR
+    int  pTime = time[KR]
+    bool hasH = not na(ph)
+    bool hasL = not na(pl)
+    if hasH and hasL
+        int lastDir = array.size(arr) > 0 ? array.get(arr, 0).dir : 0
+        if lastDir == 1
+            born := applyPivot(arr, pl, pBar, pTime, -1)
+        else if lastDir == -1
+            born := applyPivot(arr, ph, pBar, pTime, 1)
+        else
+            float c0 = close[KR]
+            float hDist = math.abs(ph - c0)
+            float lDist = math.abs(c0 - pl)
+            born := hDist >= lDist ? applyPivot(arr, ph, pBar, pTime, 1) : applyPivot(arr, pl, pBar, pTime, -1)
+    else if hasH
+        born := applyPivot(arr, ph, pBar, pTime, 1)
+    else if hasL
+        born := applyPivot(arr, pl, pBar, pTime, -1)
+    born
+
+axIn(int v, int b1, int b2, int b3, int b4) => v > 0 and (v == b1 or v == b2 or v == b3 or v == b4)
+fcShareAny(Pattern a, Pattern b) => axIn(a.tX, b.tX, b.tA, b.tB, b.tC) or axIn(a.tA, b.tX, b.tA, b.tB, b.tC) or axIn(a.tB, b.tX, b.tA, b.tB, b.tC) or axIn(a.tC, b.tX, b.tA, b.tB, b.tC)
+
+segPriceAt(int t1, float p1, int t2, float p2, int tx) =>
+    int dt = t2 - t1
+    dt != 0 ? p1 + (p2 - p1) * (float(tx - t1) / float(dt)) : p1
+
+fcIsLater(Pattern a, Pattern b) =>
+    a.tC != b.tC ? a.tC > b.tC : a.tB != b.tB ? a.tB > b.tB : a.tX > b.tX
+
+segTouchesBox(int t1, float p1, int t2, float p2, int zLeft, int zRight, float zBot, float zTop) =>
+    int sLeft = math.min(t1, t2)
+    int sRight = math.max(t1, t2)
+    int lo = math.max(sLeft, zLeft)
+    int hi = math.min(sRight, zRight)
+    bool touch = false
+    if hi >= lo
+        float qLo = segPriceAt(t1, p1, t2, p2, lo)
+        float qHi = segPriceAt(t1, p1, t2, p2, hi)
+        float segLo = math.min(qLo, qHi)
+        float segHi = math.max(qLo, qHi)
+        touch := segHi >= zBot and segLo <= zTop
+    touch
+
+fcTouchesBZone(Pattern newer, Pattern older) =>
+    int dtAB = math.max(math.abs(older.tB - older.tA), g_msPerBar)
+    int dtBC = math.max(math.abs(older.tC - older.tB), g_msPerBar)
+    int localDt = math.min(dtAB, dtBC)
+    int padT = int(math.max(float(g_msPerBar), float(localDt) * TOL))
+    float localLeg = math.min(math.abs(older.pB - older.pA), math.abs(older.pC - older.pB))
+    float padP = math.max(syminfo.mintick * 3.0, localLeg * TOL)
+    int zLeft = older.tB - padT
+    int zRight = older.tB + padT
+    float zBot = older.pB - padP
+    float zTop = older.pB + padP
+    int dT = newer.tD
+    bool touch = segTouchesBox(newer.tX, newer.pX, newer.tA, newer.pA, zLeft, zRight, zBot, zTop)
+    touch := touch or segTouchesBox(newer.tA, newer.pA, newer.tB, newer.pB, zLeft, zRight, zBot, zTop)
+    touch := touch or segTouchesBox(newer.tB, newer.pB, newer.tC, newer.pC, zLeft, zRight, zBot, zTop)
+    touch := touch or segTouchesBox(newer.tC, newer.pC, dT, newer.pD, zLeft, zRight, zBot, zTop)
+    touch := touch or segTouchesBox(newer.tX, newer.pX, newer.tB, newer.pB, zLeft, zRight, zBot, zTop)
+    touch := touch or segTouchesBox(newer.tA, newer.pA, newer.tC, newer.pC, zLeft, zRight, zBot, zTop)
+    touch := touch or segTouchesBox(newer.tB, newer.pB, dT, newer.pD, zLeft, zRight, zBot, zTop)
+    touch
+
+fcBZoneConflict(Pattern a, Pattern b) =>
+    fcIsLater(a, b) ? fcTouchesBZone(a, b) : fcIsLater(b, a) ? fcTouchesBZone(b, a) : false
+
+fcOverlap(Pattern a, Pattern b) =>
+    int aLo = math.min(a.tX, a.tD)
+    int aHi = math.max(a.tX, a.tD)
+    int bLo = math.min(b.tX, b.tD)
+    int bHi = math.max(b.tX, b.tD)
+    int spanA = math.max(aHi - aLo, 1)
+    int spanB = math.max(bHi - bLo, 1)
+    int ov    = math.min(aHi, bHi) - math.max(aLo, bLo)
+    bool res = false
+    if ov > 0
+        float ovF   = float(ov)
+        int   spMin = math.min(spanA, spanB)
+        int   spMax = math.max(spanA, spanB)
+        bool contained = ovF / float(spMin) >= 1.0 - 2.0 * TOL
+        bool strong    = ovF / float(spMax) >= 1.0 - 6.0 * TOL
+        bool moderate  = (ovF / float(spMin) >= 3.0 * TOL) and fcShareAny(a, b)
+        res := a.layer == b.layer ? (contained or strong or moderate) : (fcShareAny(a, b) and (contained or strong))
+    res
+
+fcTangleVisual(Pattern a, Pattern b) =>
+    bool res = fcOverlap(a, b)
+    if not res
+        int aLo = math.min(a.tX, a.tD)
+        int aHi = math.max(a.tX, a.tD)
+        int bLo = math.min(b.tX, b.tD)
+        int bHi = math.max(b.tX, b.tD)
+        int spanA = math.max(aHi - aLo, 1)
+        int spanB = math.max(bHi - bLo, 1)
+        float aPmin = math.min(math.min(a.pX, a.pA), math.min(math.min(a.pB, a.pC), a.pD))
+        float aPmax = math.max(math.max(a.pX, a.pA), math.max(math.max(a.pB, a.pC), a.pD))
+        float bPmin = math.min(math.min(b.pX, b.pA), math.min(math.min(b.pB, b.pC), b.pD))
+        float bPmax = math.max(math.max(b.pX, b.pA), math.max(math.max(b.pB, b.pC), b.pD))
+        float ovTime  = float(math.min(aHi, bHi) - math.max(aLo, bLo))
+        float ovPrice = math.min(aPmax, bPmax) - math.max(aPmin, bPmin)
+        if ovTime > 0 and ovPrice > 0
+            float areaInter = ovTime * ovPrice
+            float areaA = float(spanA) * math.max(aPmax - aPmin, syminfo.mintick)
+            float areaB = float(spanB) * math.max(bPmax - bPmin, syminfo.mintick)
+            float ratioToSmall = areaInter / math.max(math.min(areaA, areaB), syminfo.mintick)
+            float ratioToLarge = areaInter / math.max(math.max(areaA, areaB), syminfo.mintick)
+            float tangleThresh = 3.0 * TOL
+            if ratioToSmall >= tangleThresh or ratioToLarge >= tangleThresh
+                res := true
+    res
+
+fcPrzNear(Pattern a, Pattern b) =>
+    float aLo = math.min(a.przLo, a.przHi)
+    float aHi = math.max(a.przLo, a.przHi)
+    float bLo = math.min(b.przLo, b.przHi)
+    float bHi = math.max(b.przLo, b.przHi)
+    float aW  = math.max(aHi - aLo, syminfo.mintick)
+    float bW  = math.max(bHi - bLo, syminfo.mintick)
+    float gap = math.max(0.0, math.max(aLo, bLo) - math.min(aHi, bHi))
+    bool overlapOrTouch = gap <= syminfo.mintick
+    float aMid = (aLo + aHi) * 0.5
+    float bMid = (bLo + bHi) * 0.5
+    float midRef = math.max((math.abs(aMid) + math.abs(bMid)) * 0.5, syminfo.mintick)
+    bool centerNear = math.abs(aMid - bMid) / midRef <= TOL
+    bool gapNear = gap <= math.max(aW, bW) * TOL
+    overlapOrTouch or centerNear or gapNear
+
+fcClusterConflict(Pattern a, Pattern b) =>
+    a.isBull == b.isBull and fcTangleVisual(a, b) and fcPrzNear(a, b)
+
+// تقارب صندوقَي PRZ: عمودياً (تقارب مراكز المستويات) وأفقياً (موضع D الزمني).
+// عتبتان أوسع من TOL كي تلتقط صندوقين متجاورين (شارك/كراب على قاعدة قريبة)،
+// فيُعتبران تكراراً لمنطقة انعكاس واحدة ويُختار الأفضل بينهما.
+fcBoxNear(Pattern a, Pattern b) =>
+    float aMid = (a.przLo + a.przHi) * 0.5
+    float bMid = (b.przLo + b.przHi) * 0.5
+    float midRef = math.max((math.abs(aMid) + math.abs(bMid)) * 0.5, syminfo.mintick)
+    bool vNear = math.abs(aMid - bMid) / midRef <= TOL * 2.0
+    int aSpan = math.max(math.abs(a.tD - a.tX), 1)
+    int bSpan = math.max(math.abs(b.tD - b.tX), 1)
+    int spanRef = math.max(aSpan, bSpan)
+    bool hNear = math.abs(a.tD - b.tD) <= int(float(spanRef) * 0.25)
+    vNear and hNear
+
+fcStructureSpan(Pattern f) =>
+    float(math.max(math.abs(f.tD - f.tX), 1))
+
+fcPriceSpan(Pattern f) =>
+    float pLo = math.min(math.min(f.pX, f.pA), math.min(math.min(f.pB, f.pC), f.pD))
+    float pHi = math.max(math.max(f.pX, f.pA), math.max(math.max(f.pB, f.pC), f.pD))
+    math.max(pHi - pLo, syminfo.mintick)
+
+// تداخل المنطقة البنيوية الخارجية = المستطيل المحيط الكامل (زمن X→D × سعر min→max).
+// يلتقط نموذجين في نفس المستويات بغضّ النظر عن الاتجاه أو الطبقة أو الأضلاع المشتركة.
+// يُرجع نسبة مساحة التقاطع إلى مساحة النموذج الأصغر (0..1).
+fcStructOverlap(Pattern a, Pattern b) =>
+    int aTLo = math.min(a.tX, a.tD)
+    int aTHi = math.max(a.tX, a.tD)
+    int bTLo = math.min(b.tX, b.tD)
+    int bTHi = math.max(b.tX, b.tD)
+    float aPLo = math.min(math.min(a.pX, a.pA), math.min(math.min(a.pB, a.pC), a.pD))
+    float aPHi = math.max(math.max(a.pX, a.pA), math.max(math.max(a.pB, a.pC), a.pD))
+    float bPLo = math.min(math.min(b.pX, b.pA), math.min(math.min(b.pB, b.pC), b.pD))
+    float bPHi = math.max(math.max(b.pX, b.pA), math.max(math.max(b.pB, b.pC), b.pD))
+    float ovT = float(math.min(aTHi, bTHi) - math.max(aTLo, bTLo))
+    float ovP = math.min(aPHi, bPHi) - math.max(aPLo, bPLo)
+    float ratio = 0.0
+    if ovT > 0.0 and ovP > 0.0
+        float areaInter = ovT * ovP
+        float areaA = float(math.max(aTHi - aTLo, 1)) * math.max(aPHi - aPLo, syminfo.mintick)
+        float areaB = float(math.max(bTHi - bTLo, 1)) * math.max(bPHi - bPLo, syminfo.mintick)
+        ratio := areaInter / math.max(math.min(areaA, areaB), syminfo.mintick)
+    ratio
+
+// نسبة حجم النموذجين (الأكبر ÷ الأصغر) بمساحة المستطيل المحيط. قيمة عالية تعني
+// احتواء (نموذج كبير بداخله أصغر) — يُسمح بتراكمهما بدل منعه.
+fcSizeRatio(Pattern a, Pattern b) =>
+    int aTLo = math.min(a.tX, a.tD)
+    int aTHi = math.max(a.tX, a.tD)
+    int bTLo = math.min(b.tX, b.tD)
+    int bTHi = math.max(b.tX, b.tD)
+    float aPLo = math.min(math.min(a.pX, a.pA), math.min(math.min(a.pB, a.pC), a.pD))
+    float aPHi = math.max(math.max(a.pX, a.pA), math.max(math.max(a.pB, a.pC), a.pD))
+    float bPLo = math.min(math.min(b.pX, b.pA), math.min(math.min(b.pB, b.pC), b.pD))
+    float bPHi = math.max(math.max(b.pX, b.pA), math.max(math.max(b.pB, b.pC), b.pD))
+    float areaA = float(math.max(aTHi - aTLo, 1)) * math.max(aPHi - aPLo, syminfo.mintick)
+    float areaB = float(math.max(bTHi - bTLo, 1)) * math.max(bPHi - bPLo, syminfo.mintick)
+    math.max(areaA, areaB) / math.max(math.min(areaA, areaB), syminfo.mintick)
+
+fcPreferA(Pattern a, Pattern b) =>
+    bool pickA = false
+    if a.status != b.status
+        pickA := a.status == ST_HIT
+    else
+        // تفضيل النموذج ذي منطقة PRZ المزدوجة (نسبتين PRZ = zoneBox: الشارك/الكابوريا)
+        // على ذي المستوى الأساسي، لأن تقاطع مستويين أدقّ للانعكاس.
+        bool aZone = array.get(SPECS, a.patId).zoneBox
+        bool bZone = array.get(SPECS, b.patId).zoneBox
+        if aZone != bZone
+            pickA := aZone
+        else
+            int ac = maskCount(a.layerMask)
+            int bc = maskCount(b.layerMask)
+            if ac != bc
+                pickA := ac > bc
+            else
+                bool aClearlyStronger = a.score > b.score * (1.0 + TOL)
+                bool bClearlyStronger = b.score > a.score * (1.0 + TOL)
+                if aClearlyStronger or bClearlyStronger
+                    pickA := aClearlyStronger
+                else
+                    float aSpan = fcStructureSpan(a)
+                    float bSpan = fcStructureSpan(b)
+                    if aSpan != bSpan
+                        pickA := aSpan > bSpan
+                    else
+                        float aPriceSpan = fcPriceSpan(a)
+                        float bPriceSpan = fcPriceSpan(b)
+                        pickA := aPriceSpan != bPriceSpan ? aPriceSpan > bPriceSpan : a.score >= b.score
+    pickA
+
+fcSame(Pattern a, Pattern b) => a.isBull == b.isBull and a.patId == b.patId and a.tX == b.tX and a.tA == b.tA and a.tB == b.tB and a.tC == b.tC
+
+findSame(array<Pattern> arr, Pattern f) =>
+    int r = -1
+    for [k, e] in arr
+        if fcSame(f, e)
+            r := k
+            break
+    r
+
+layerOn(int n) => n == 1 ? activeS : n == 2 ? activeM : n == 3 ? activeL : activeXL
+
+hQueue(bool isBull) =>
+    int _fi = isBull ? 0 : 1
+    array.set(patFlag, _fi, true)
+
+processCombo(Pivot X, Pivot A, Pivot B, Pivot C, int layerNum) =>
+    bool xaDistanceOk = (A.bar - X.bar) > 10
+    bool abDistanceOk = (B.bar - A.bar) >= 9
+    bool orderOk = X.bar < A.bar and A.bar < B.bar and B.bar < C.bar and xaDistanceOk and abDistanceOk and abBcTimeOk(A.bar, B.bar, C.bar)
+    if orderOk
+        bool isBull = X.dir == -1
+        if seqOk(X.dir, A.dir, B.dir, C.dir, isBull)
+            float pX = X.price
+            float pA = A.price
+            float pB = B.price
+            float pC = C.price
+            bool bInXA = (isBull ? (pX < pB and pB < pA) : (pA < pB and pB < pX)) and bRetrOk(pX, pA, pB)
+            bool cHold = isBull ? (pC <= pA) : (pC >= pA)
+            bool cExt  = isBull ? (pC > pA)  : (pC < pA)
+            bool symOk = legSymOk(pX, pA, pB, pC)
+            float xaPct = pX > 0.0 ? math.abs(pA - pX) / pX * 100.0 : 0.0
+            float abPct = pA > 0.0 ? math.abs(pB - pA) / pA * 100.0 : 0.0
+            bool  feasible = xaPct >= _minXAeff
+            bool legsNonZero = math.abs(pA - pX) > 0.0 and math.abs(pB - pA) > 0.0 and math.abs(pC - pB) > 0.0
+            bool timesOk     = X.t > 0 and A.t > 0 and B.t > 0 and C.t > 0
+            bool inSpan      = (bar_index - X.bar) < SCAN_SPAN
+            bool cheapOk     = feasible and bInXA and symOk and legsNonZero and timesOk and inSpan
+            if cheapOk
+                float rXAB = fibRatio(pA, pB, pX, pA)
+                float rABC = fibRatio(pB, pC, pA, pB)
+                int stHold = 0
+                int stExt  = 0
+                int bxCache = 0
+                for ni = 0 to array.size(SPECS) - 1
+                    PatSpec s = array.get(SPECS, ni)
+                    if s.on and (s.extC ? cExt : cHold)
+                        bool gartleyABok = not s.gartley or abPct >= _minXAeff
+                        if gartleyABok and inRangeB(rXAB, s.bLo, s.bHi, s.bTolLo, s.bTolHi) and inRangeB(rABC, s.cLo, s.cHi, TOL, TOL)
+                            float qB = ratioQual(rXAB, s.bLo, s.bHi, s.bTol)
+                            float qC = ratioQual(rABC, s.cLo, s.cHi, TOL)
+                            int stCk = s.extC ? stExt : stHold
+                            if stCk == 0
+                                stCk := structOk(X.bar, A.bar, B.bar, C.bar, pX, pA, pB, pC, isBull, s.extC) ? 1 : -1
+                                if s.extC
+                                    stExt := stCk
+                                else
+                                    stHold := stCk
+                            if stCk == 1
+                                [przL, przH, przDensity] = przZone(s, pX, pA, pB, pC)
+                                bool beyondX = not s.crabFam or (isBull ? przL < pX : przH > pX)
+                                if beyondX
+                                    float capP      = s.extC ? pC : pA
+                                    float przNear   = isBull ? przH : przL
+                                    float preActLvl = pC + (przNear - pC) * PRE_ACT_FRAC
+                                    [tBar, tPrice, tTime, isValid] = scanFromC(C.bar, capP, przL, przH, preActLvl, isBull)
+                                    bool hit     = tBar >= 0
+                                    bool aged    = (bar_index - C.bar) > MAX_CD_BARS
+
+                                    bool liveBeyondX = true
+                                    if s.crabFam
+                                        if bxCache == 0
+                                            bxCache := priceBeyondX(C.bar, pX, isBull) ? 1 : -1
+                                        liveBeyondX := bxCache == 1
+
+                                    if isValid and liveBeyondX and (hit or (i_ShowProj and not aged))
+                                        int   prjT = projTime(B.t, C.t)
+                                        float prjP = isBull ? przH : przL
+                                        float pDpt = hit ? tPrice : prjP
+                                        int   tDpt = prjT
+                                        [rCD, rXD, rBCproj] = legRatios(pX, pA, pB, pC, pDpt, s.extC)
+                                        bool legsOk = legsValid(s, rCD, rXD, rBCproj, hit)
+                                        if legsOk
+                                            float qD = ratioQual(rXD, s.dLo, s.dHi, s.dTol)
+                                            float rank = hit ? scoreCalc(qB, qC, qD, przDensity) : projScore(qB, qC, przDensity)
+                                            array.push(fcBuf, Pattern.new(patId = ni, isBull = isBull, pX = pX, pA = pA, pB = pB, pC = pC, tX = X.t, tA = A.t, tB = B.t, tC = C.t, bC = C.bar, przLo = przL, przHi = przH, layer = layerNum, score = rank, status = hit ? ST_HIT : ST_LIVE, pD = pDpt, tD = tDpt, tActivate = hit ? tTime : 0, layerMask = layerBit(layerNum)))
+
+processLayer(array<Pivot> arr, int layerNum) =>
+    int sz = array.size(arr)
+    if sz >= 4
+        int scanWin = SCAN_WINDOW
+        int upper = int(math.min(sz - 4, scanWin))
+        for idx = 0 to upper
+            Pivot C = array.get(arr, idx)
+            int endIdx = int(math.min(sz - 1, idx + scanWin))
+            if idx + 3 <= endIdx
+                for iB = idx + 1 to endIdx - 2 by 2
+                    Pivot B = array.get(arr, iB)
+                    if B.dir == -C.dir and iB + 2 <= endIdx
+                        for iA = iB + 1 to endIdx - 1 by 2
+                            Pivot A = array.get(arr, iA)
+                            if A.dir == C.dir and iA + 1 <= endIdx
+                                for iX = iA + 1 to endIdx by 2
+                                    Pivot X = array.get(arr, iX)
+                                    if X.dir == B.dir
+                                        processCombo(X, A, B, C, layerNum)
+
+commitBuf() =>
+    while array.size(fcBuf) > 0
+        int bi = 0
+        float bs = -1.0
+        for k = 0 to array.size(fcBuf) - 1
+            Pattern c = array.get(fcBuf, k)
+            if c.score > bs
+                bs := c.score
+                bi := k
+        Pattern best = array.remove(fcBuf, bi)
+        bool dup = findSame(fcHist, best) >= 0
+        int  liveIdx = dup ? -1 : findSame(fcLive, best)
+
+        if liveIdx >= 0
+            Pattern q = array.get(fcLive, liveIdx)
+            q.score := best.score
+            q.przLo := best.przLo
+            q.przHi := best.przHi
+            q.layer := best.layer
+            q.layerMask := best.layerMask
+            if best.status == ST_HIT
+                // ترقية فورية: النموذج اكتمل في نفس دفعة المسح — يُنقل إلى المكتملة
+                // بدل انتظار الشمعة التالية (يطابق منطق liveUpdate عند الترقية).
+                array.remove(fcLive, liveIdx)
+                q.status := ST_HIT
+                q.pD := best.pD
+                q.tD := best.tD
+                if q.tActivate == 0
+                    q.tActivate := time
+                int hIdx = findSame(fcHist, q)
+                if hIdx >= 0
+                    Pattern hx = array.get(fcHist, hIdx)
+                    if q.score >= hx.score
+                        array.set(fcHist, hIdx, q)
+                else
+                    array.unshift(fcHist, q)
+                    while array.size(fcHist) > MAX_HIST
+                        array.pop(fcHist)
+                    hQueue(q.isBull)
+            else
+                q.pD := best.pD
+                q.tD := best.tD
+                array.set(fcLive, liveIdx, q)
+            array.set(g_update, 0, array.get(g_update, 0) + 1)
+
+        if not dup and liveIdx < 0
+            bool blocked = false
+
+            if best.status == ST_HIT
+                int chi = array.size(fcHist) - 1
+                while chi >= 0 and not blocked
+                    Pattern e = array.get(fcHist, chi)
+                    if fcClusterConflict(best, e)
+                        if fcPreferA(best, e)
+                            array.remove(fcHist, chi)
+                        else
+                            blocked := true
+                    chi -= 1
+
+                int hi = array.size(fcHist) - 1
+                while hi >= 0 and not blocked
+                    Pattern e = array.get(fcHist, hi)
+                    if fcBZoneConflict(best, e)
+                        if fcIsLater(best, e)
+                            blocked := true
+                        else if fcIsLater(e, best)
+                            array.remove(fcHist, hi)
+                    hi -= 1
+
+                if not blocked
+                    for e in fcHist
+                        bool sameLayerConflict = best.layer == e.layer and fcOverlap(best, e)
+                        if sameLayerConflict and e.score >= best.score
+                            blocked := true
+                            break
+            else
+                int cli = array.size(fcLive) - 1
+                while cli >= 0 and not blocked
+                    Pattern e = array.get(fcLive, cli)
+                    if fcClusterConflict(best, e)
+                        if fcPreferA(best, e)
+                            array.remove(fcLive, cli)
+                        else
+                            blocked := true
+                    cli -= 1
+
+                int li = array.size(fcLive) - 1
+                while li >= 0 and not blocked
+                    Pattern e = array.get(fcLive, li)
+                    if fcBZoneConflict(best, e)
+                        if fcIsLater(best, e)
+                            blocked := true
+                        else if fcIsLater(e, best)
+                            array.remove(fcLive, li)
+                    li -= 1
+
+                if not blocked
+                    array<int> rivals = array.new<int>()
+                    float topRival = -1.0
+                    for [k, e] in fcLive
+                        if best.layer == e.layer and fcOverlap(best, e)
+                            array.push(rivals, k)
+                            topRival := math.max(topRival, e.score)
+                    if array.size(rivals) > 0
+                        if best.score > topRival
+                            for r = array.size(rivals) - 1 to 0
+                                array.remove(fcLive, array.get(rivals, r))
+                        else
+                            blocked := true
+
+            if not blocked
+                if best.status == ST_LIVE
+                    if array.size(fcLive) >= MAX_LIVE
+                        int   wi = -1
+                        float ws = best.score
+                        for [k, e] in fcLive
+                            if e.score < ws
+                                ws := e.score
+                                wi := k
+                        if wi >= 0
+                            array.remove(fcLive, wi)
+                    if array.size(fcLive) < MAX_LIVE
+                        array.unshift(fcLive, best)
+                        array.set(g_update, 0, array.get(g_update, 0) + 1)
+                else
+                    array.unshift(fcHist, best)
+                    while array.size(fcHist) > MAX_HIST
+                        array.pop(fcHist)
+                    hQueue(best.isBull)
+                    array.set(g_update, 0, array.get(g_update, 0) + 1)
+    0
+
+liveUpdate() =>
+    int i = array.size(fcLive) - 1
+    while i >= 0
+        Pattern q = array.get(fcLive, i)
+        PatSpec s = array.get(SPECS, q.patId)
+        int newSt = ST_LIVE
+        float pLo = math.min(q.przLo, q.przHi)
+        float pHi = math.max(q.przLo, q.przHi)
+        float eps = syminfo.mintick
+        float przNear   = q.isBull ? pHi : pLo
+        float preActLvl = q.pC + (przNear - q.pC) * PRE_ACT_FRAC
+        float capLevel  = s.extC ? q.pC : q.pA
+        bool cBreak   = q.isBull ? high > capLevel : low < capLevel
+        bool touched  = q.isBull ? low <= preActLvl : high >= preActLvl
+        bool przBreak = q.isBull ? close < pLo - eps : close > pHi + eps
+
+        // منهجية PRZ القياسية: PRZ منطقة وصول — اللمس بالظل يُكمل النموذج (touched)،
+        // والإلغاء يتطلّب تأكيداً بالإغلاق (przBreak). عند تحقّقهما في شمعة واحدة
+        // يُغلَّب اللمس صراحةً فيُعتبر النموذج مكتملاً لا مكسوراً.
+        if cBreak
+            newSt := ST_BREAK
+        else if touched
+            newSt := ST_HIT
+        else if przBreak
+            newSt := ST_BREAK
+
+        if newSt != ST_LIVE
+            array.remove(fcLive, i)
+            if newSt == ST_HIT
+                q.status := ST_HIT
+                if q.tActivate == 0
+                    q.tActivate := time
+                int histIdx = findSame(fcHist, q)
+                bool isNewHit = histIdx < 0
+                if histIdx >= 0
+                    Pattern hx = array.get(fcHist, histIdx)
+                    if q.score >= hx.score
+                        array.set(fcHist, histIdx, q)
+                else
+                    array.unshift(fcHist, q)
+                    while array.size(fcHist) > MAX_HIST
+                        array.pop(fcHist)
+                if isNewHit
+                    hQueue(q.isBull)
+            array.set(g_update, 0, array.get(g_update, 0) + 1)
+        else
+            q.tD := projTime(q.tB, q.tC)
+        i -= 1
+
+float phS  = ta.pivothigh(high, KL_S_S,  KR_S)
+float plS  = ta.pivotlow(low,  KL_S_S,  KR_S)
+float phM  = ta.pivothigh(high, KL_M_S,  KR_M)
+float plM  = ta.pivotlow(low,  KL_M_S,  KR_M)
+float phL  = ta.pivothigh(high, KL_L_S,  KR_L)
+float plL  = ta.pivotlow(low,  KL_L_S,  KR_L)
+float phXL = ta.pivothigh(high, KL_XL_S, KR_XL)
+float plXL = ta.pivotlow(low,  KL_XL_S, KR_XL)
+
+if barstate.isconfirmed and i_EngHarm
+    bool bornS  = fractalSwing(pvS,  phS,  plS,  KR_S)
+    bool bornM  = fractalSwing(pvM,  phM,  plM,  KR_M)
+    bool bornL  = fractalSwing(pvL,  phL,  plL,  KR_L)
+    bool bornXL = fractalSwing(pvXL, phXL, plXL, KR_XL)
+    liveUpdate()
+    if (activeS and bornS) or (activeM and bornM) or (activeL and bornL) or (activeXL and bornXL)
+        array.clear(fcBuf)
+        if activeS
+            processLayer(pvS, 1)
+        if activeM
+            processLayer(pvM, 2)
+        if activeL
+            processLayer(pvL, 3)
+        if activeXL
+            processLayer(pvXL, 4)
+        commitBuf()
+
+var array<line>  hLines  = array.new<line>()
+var array<label> hLabels = array.new<label>()
+var array<box>   hBoxes  = array.new<box>()
+var int lastUpdateCount = -1
+
+applyExtraTr(color base, int extraTr) =>
+    float baseTr = color.t(base)
+    float e = math.max(0.0, math.min(100.0, float(extraTr)))
+    float outTr = 100.0 - (100.0 - baseTr) * (100.0 - e) / 100.0
+    color.new(base, int(math.round(outTr)))
+
+spanBarsOf(Pattern f) =>
+    int(math.max(1.0, math.round(float(math.abs(f.tC - f.tX)) / float(math.max(g_msPerBar, 1)))))
+
+smartPrzBars(Pattern f) =>
+    int wanted = int(math.round(float(spanBarsOf(f)) * TOL))
+    int(math.max(float(PRZ_MIN_BARS), math.min(float(PRZ_MAX_BARS), float(wanted))))
+
+smartTargetBars(Pattern f) =>
+    int wanted = int(math.round(float(spanBarsOf(f)) * TOL * 2.0))
+    int(math.max(float(TGT_MIN_BARS), math.min(float(TGT_MAX_BARS), float(wanted))))
+
+drawPattern(Pattern f, PatSpec s, array<int> hitTDs, array<line> linesArr, array<label> labelsArr, array<box> boxesArr, int capLines, int capLabels, int capBoxes, int drawTr) =>
+    int needBoxes = s.zoneBox ? 1 : 0
+    if array.size(linesArr) + COST_LINES <= capLines and array.size(labelsArr) + COST_LABELS <= capLabels and array.size(boxesArr) + needBoxes <= capBoxes
+        color noBg  = color.new(color.white, 100)
+        color baseCol   = f.status == ST_LIVE ? i_ProjCol : (f.isBull ? i_BullCol : i_BearCol)
+        color structCol = applyExtraTr(baseCol, drawTr)
+        color textCol   = structCol
+        color zoneBgCol = applyExtraTr(structCol, TR_ZONE_BG)
+
+        // موضع رسم D الأفقي = f.tD المنطقي، مقيَّداً بصرياً ألا يتجاوز الشمعة
+        // الأخيرة (time) فلا يقفز للمستقبل؛ وللاستباقي ألا يتجاوز C إلا بعدد بسيط
+        // ثابت من الشموع (D_GAP_BARS). المنطق (f.tD) لا يتغيّر — الرسم فقط.
+        int dCap = f.status == ST_LIVE ? int(math.min(f.tC + D_GAP_BARS * g_msPerBar, time)) : time
+        int dDrawT = int(math.min(f.tD, dCap))
+
+        array.push(linesArr, line.new(f.tX, f.pX, f.tA, f.pA, xloc = xloc.bar_time, color = structCol, style = plotStyle, width = PLOT_WIDTH))
+        array.push(linesArr, line.new(f.tA, f.pA, f.tB, f.pB, xloc = xloc.bar_time, color = structCol, style = plotStyle, width = PLOT_WIDTH))
+        array.push(linesArr, line.new(f.tB, f.pB, f.tC, f.pC, xloc = xloc.bar_time, color = structCol, style = plotStyle, width = PLOT_WIDTH))
+        array.push(linesArr, line.new(f.tC, f.pC, dDrawT, f.pD, xloc = xloc.bar_time, color = structCol, style = plotStyle, width = PLOT_WIDTH))
+        array.push(linesArr, line.new(f.tX, f.pX, f.tB, f.pB, xloc = xloc.bar_time, color = structCol, style = plotStyle, width = PLOT_WIDTH))
+        // ضلع A→C يُرسم دائماً (للمكتمل والاستباقي) — أُعيد تنقيطه للاستباقي بطلب.
+        array.push(linesArr, line.new(f.tA, f.pA, f.tC, f.pC, xloc = xloc.bar_time, color = structCol, style = plotStyle, width = PLOT_WIDTH))
+        array.push(linesArr, line.new(f.tB, f.pB, dDrawT, f.pD, xloc = xloc.bar_time, color = structCol, style = plotStyle, width = PLOT_WIDTH))
+
+        float lblOff = 0.0015
+        float lblLo = f.isBull ? (1.0 - lblOff) : (1.0 + lblOff)
+        float lblHi = f.isBull ? (1.0 + lblOff) : (1.0 - lblOff)
+        string stLo = f.isBull ? label.style_label_up : label.style_label_down
+        string stHi = f.isBull ? label.style_label_down : label.style_label_up
+
+        array.push(labelsArr, label.new(f.tX, f.pX * lblLo, "X", xloc = xloc.bar_time, color = noBg, textcolor = textCol, style = stLo, size = size.tiny))
+        array.push(labelsArr, label.new(f.tA, f.pA * lblHi, "A", xloc = xloc.bar_time, color = noBg, textcolor = textCol, style = stHi, size = size.tiny))
+        array.push(labelsArr, label.new(f.tB, f.pB * lblLo, "B", xloc = xloc.bar_time, color = noBg, textcolor = textCol, style = stLo, size = size.tiny))
+        array.push(labelsArr, label.new(f.tC, f.pC * lblHi, "C", xloc = xloc.bar_time, color = noBg, textcolor = textCol, style = stHi, size = size.tiny))
+
+        float dBase = dBaseOf(s.extC, f.pA, f.pC)
+        float rD = f.status == ST_LIVE ? s.dLo : fibRatio(dBase, f.pD, f.pX, dBase)
+        string patLbl = s.name + (not s.zoneBox and str.length(PRZ_TEXT) > 0 ? " " + PRZ_TEXT : "") + " " + str.tostring(rD, "#.###")
+        color patLabelBg = s.zoneBox ? noBg : zoneBgCol
+        array.push(labelsArr, label.new(dDrawT, f.pD, patLbl, xloc = xloc.bar_time, color = patLabelBg, textcolor = textCol, style = label.style_label_right, size = size.tiny))
+
+        int przBars = smartPrzBars(f)
+        int zL = dDrawT
+        int zSmartR = int(zL + przBars * g_msPerBar)
+        int boxL = dDrawT
+        // الصندوق فقط (لا الأضلاع): المكتمل يمتدّ من D حتى يلامس شمعة التفعيل؛
+        // الاستباقي يمتدّ حتى الشمعة الأخيرة (منطقة الترقّب ما دام لم يصلها بعد).
+        int boxActR = f.status == ST_HIT and f.tActivate > 0 ? f.tActivate : time
+        int boxR = math.max(boxActR, boxL + g_msPerBar)
+        string smartPrzText = drawTr > 0 ? "" : PRZ_TEXT
+
+        if not s.zoneBox
+            float zMid = fibLevel(f.pX, dBase, s.dLo)
+            if array.size(linesArr) + 1 <= capLines
+                array.push(linesArr, line.new(zL, zMid, zSmartR, zMid, xloc = xloc.bar_time, color = structCol, style = plotStyle, width = PLOT_WIDTH))
+        else
+            array.push(boxesArr, box.new(left = boxL, top = f.przHi, right = boxR, bottom = f.przLo, xloc = xloc.bar_time, border_color = structCol, border_width = PLOT_WIDTH, border_style = plotStyle, bgcolor = zoneBgCol, text = smartPrzText, text_color = textCol, text_size = size.tiny, text_halign = text.align_center, text_valign = text.align_center))
+
+        int hitRank = f.status == ST_HIT ? array.indexof(hitTDs, f.tD) : -1
+        if hitRank >= 0 and i_ShowTgts
+            int targetBars = smartTargetBars(f)
+            int tgStart = int(zSmartR + TARGET_GAP_BARS * g_msPerBar)
+            int lvR = int(tgStart + targetBars * g_msPerBar)
+            bool  isSharkTarget = s.extC
+            float targetBase    = isSharkTarget ? f.pC : f.pA
+            float t1Ratio       = isSharkTarget ? TGT1_SHARK : TGT1_STD
+            float t2Ratio       = isSharkTarget ? TGT2_SHARK : TGT2_STD
+            float t1            = fibLevel(targetBase, f.pD, t1Ratio)
+            float t2            = fibLevel(targetBase, f.pD, t2Ratio)
+            float tgtRef = math.max(math.max(math.abs(t1), math.abs(t2)), syminfo.mintick)
+            bool targetsClose = math.abs(t1 - t2) / tgtRef <= TOL / 5.0
+            int t2LabelT = targetsClose ? int(lvR + 2 * g_msPerBar) : lvR
+
+            if array.size(linesArr) + 1 <= capLines and array.size(labelsArr) + 1 <= capLabels
+                array.push(linesArr, line.new(tgStart, t1, lvR, t1, xloc = xloc.bar_time, color = structCol, style = plotStyle, width = PLOT_WIDTH))
+                array.push(labelsArr, label.new(lvR, t1, fmtShort(t1), xloc = xloc.bar_time, color = noBg, textcolor = textCol, style = label.style_label_left, size = size.tiny))
+            if array.size(linesArr) + 1 <= capLines and array.size(labelsArr) + 1 <= capLabels
+                array.push(linesArr, line.new(tgStart, t2, lvR, t2, xloc = xloc.bar_time, color = structCol, style = plotStyle, width = PLOT_WIDTH))
+                array.push(labelsArr, label.new(t2LabelT, t2, fmtShort(t2), xloc = xloc.bar_time, color = noBg, textcolor = textCol, style = label.style_label_left, size = size.tiny))
+
+sameTimeSegment(int a1, int a2, int b1, int b2) =>
+    (a1 == b1 and a2 == b2) or (a1 == b2 and a2 == b1)
+
+segmentExistsIn(Pattern g, int a1, int a2) =>
+    sameTimeSegment(a1, a2, g.tX, g.tA) or sameTimeSegment(a1, a2, g.tA, g.tB) or sameTimeSegment(a1, a2, g.tB, g.tC) or sameTimeSegment(a1, a2, g.tC, g.tD) or sameTimeSegment(a1, a2, g.tX, g.tB) or sameTimeSegment(a1, a2, g.tA, g.tC) or sameTimeSegment(a1, a2, g.tB, g.tD)
+
+sharesLine(Pattern f, Pattern g) =>
+    segmentExistsIn(g, f.tX, f.tA) or segmentExistsIn(g, f.tA, f.tB) or segmentExistsIn(g, f.tB, f.tC) or segmentExistsIn(g, f.tC, f.tD) or segmentExistsIn(g, f.tX, f.tB) or segmentExistsIn(g, f.tA, f.tC) or segmentExistsIn(g, f.tB, f.tD)
+
+buildDrawList(array<Pattern> histArr, array<Pattern> liveArr, int lockCap, int maxPat, bool useLayerFilter) =>
+    array<Pattern> locked = array.new<Pattern>()
+    array<Pattern> rest   = array.new<Pattern>()
+    if i_ShowHit
+        for f in histArr
+            if not useLayerFilter or layerOn(f.layer)
+                if array.size(locked) < lockCap
+                    array.push(locked, f)
+                else
+                    array.push(rest, f)
+    if i_ShowProj
+        for f in liveArr
+            if not useLayerFilter or layerOn(f.layer)
+                array.push(rest, f)
+    int ns = array.size(rest)
+    if ns > 1
+        for si = 0 to ns - 2
+            int mxi = si
+            for sj = si + 1 to ns - 1
+                if array.get(rest, sj).score > array.get(rest, mxi).score
+                    mxi := sj
+            if mxi != si
+                Pattern tmp = array.get(rest, si)
+                array.set(rest, si, array.get(rest, mxi))
+                array.set(rest, mxi, tmp)
+    array<Pattern> cand   = array.concat(locked, rest)
+    array<Pattern> toDraw = array.new<Pattern>()
+    for f in cand
+        bool clash = false
+        array<int> removeYounger = array.new<int>()
+        int drawN = array.size(toDraw)
+        if drawN > 0
+            for k = 0 to drawN - 1
+                Pattern g = array.get(toDraw, k)
+                bool exactDup = fcSame(f, g)
+                bool clusterClash = not exactDup and fcClusterConflict(f, g)
+                bool sameLayerClash = f.layer == g.layer and sharesLine(f, g)
+
+                bool ignoreClash = f.status != g.status
+
+                if exactDup
+                    clash := true
+                    break
+                else if not ignoreClash and clusterClash
+                    if fcPreferA(f, g)
+                        array.push(removeYounger, k)
+                    else
+                        clash := true
+                        break
+                else if not ignoreClash and sameLayerClash
+                    clash := true
+                    break
+                else if not ignoreClash and fcBZoneConflict(f, g)
+                    if fcIsLater(f, g)
+                        clash := true
+                        break
+                    else if fcIsLater(g, f)
+                        array.push(removeYounger, k)
+                else if not ignoreClash and f.isBull == g.isBull and fcBoxNear(f, g)
+                    // صندوقا PRZ متقاربان بنفس الاتجاه → منطقة انعكاس واحدة عملياً،
+                    // يُبقى الأفضل فقط (fcPreferA: نسبتين PRZ ثم النقاط).
+                    if fcPreferA(f, g)
+                        array.push(removeYounger, k)
+                    else
+                        clash := true
+                        break
+                else if not ignoreClash and fcStructOverlap(f, g) >= STRUCT_OV_MIN and fcSizeRatio(f, g) < STRUCT_CONTAIN_MIN
+                    // تشابك بنيوي قوي بحجمين متقاربين (تكرار) → يُبقى الأقوى.
+                    // يُستثنى الاحتواء (نموذج كبير بداخله أصغر): يُسمح بتراكمهما.
+                    if fcPreferA(f, g)
+                        array.push(removeYounger, k)
+                    else
+                        clash := true
+                        break
+        if not clash
+            if array.size(removeYounger) > 0
+                for r = array.size(removeYounger) - 1 to 0
+                    array.remove(toDraw, array.get(removeYounger, r))
+            // الاستباقي (ST_LIVE) يُضاف ضمن حصّة إضافية (maxPat + MAX_LIVE) كي لا
+            // تطرده المكتملة الكثيرة عند امتلاء maxPat، مع سقف يحمي حدّ كائنات الرسم.
+            bool isLive = f.status == ST_LIVE
+            int drawLimit = isLive ? maxPat + MAX_LIVE : maxPat
+            if array.size(toDraw) < drawLimit
+                array.push(toDraw, f)
+    toDraw
+
+if barstate.islast and i_EngHarm
+    int currentUpdate = array.get(g_update, 0)
+    if currentUpdate != lastUpdateCount or barstate.isconfirmed
+        lastUpdateCount := currentUpdate
+        for ln in hLines
+            line.delete(ln)
+        array.clear(hLines)
+        for lb in hLabels
+            label.delete(lb)
+        array.clear(hLabels)
+        for bx in hBoxes
+            box.delete(bx)
+        array.clear(hBoxes)
+
+        int lockCap = math.min(LOCK_HITS, i_MaxPat)
+        array<Pattern> toDraw = buildDrawList(fcHist, fcLive, lockCap, i_MaxPat, true)
+        int drawCount = array.size(toDraw)
+
+        int bull1TD = -1
+        float bull1Score = -1.0
+        int bull2TD = -1
+        float bull2Score = -1.0
+        int bear1TD = -1
+        float bear1Score = -1.0
+        int bear2TD = -1
+        float bear2Score = -1.0
+        for f in toDraw
+            if f.status == ST_HIT
+                if f.isBull
+                    if f.tD > bull1TD or (f.tD == bull1TD and f.score > bull1Score)
+                        bull2TD := bull1TD
+                        bull2Score := bull1Score
+                        bull1TD := f.tD
+                        bull1Score := f.score
+                    else if f.tD > bull2TD or (f.tD == bull2TD and f.score > bull2Score)
+                        bull2TD := f.tD
+                        bull2Score := f.score
+                else
+                    if f.tD > bear1TD or (f.tD == bear1TD and f.score > bear1Score)
+                        bear2TD := bear1TD
+                        bear2Score := bear1Score
+                        bear1TD := f.tD
+                        bear1Score := f.score
+                    else if f.tD > bear2TD or (f.tD == bear2TD and f.score > bear2Score)
+                        bear2TD := f.tD
+                        bear2Score := f.score
+
+        array<int> hitTDs = array.new<int>()
+        for f in toDraw
+            if f.status == ST_HIT and array.indexof(hitTDs, f.tD) < 0
+                array.push(hitTDs, f.tD)
+        array.sort(hitTDs, order.descending)
+        while array.size(hitTDs) > LEAD_HITS
+            array.pop(hitTDs)
+
+        if drawCount > 0
+            // الاستباقي يُرسم أولاً ليحجز سعة الرسم قبل أن تستهلكها المكتملة
+            // التاريخية الكثيرة (بعد إلغاء التنظيف الزمني) فيختفي.
+            for i = 0 to drawCount - 1
+                Pattern f = array.get(toDraw, i)
+                if f.status == ST_LIVE
+                    PatSpec s = array.get(SPECS, f.patId)
+                    drawPattern(f, s, hitTDs, hLines, hLabels, hBoxes, CAP_LINES, CAP_LABELS, CAP_BOXES, 0)
+            for i = 0 to drawCount - 1
+                Pattern f = array.get(toDraw, i)
+                PatSpec s = array.get(SPECS, f.patId)
+                bool isLatestBull = f.status == ST_HIT and f.isBull and ((f.tD == bull1TD and f.score == bull1Score) or (f.tD == bull2TD and f.score == bull2Score))
+                bool isLatestBear = f.status == ST_HIT and not f.isBull and ((f.tD == bear1TD and f.score == bear1Score) or (f.tD == bear2TD and f.score == bear2Score))
+                if isLatestBull or isLatestBear
+                    drawPattern(f, s, hitTDs, hLines, hLabels, hBoxes, CAP_LINES, CAP_LABELS, CAP_BOXES, 0)
+            for i = 0 to drawCount - 1
+                Pattern f = array.get(toDraw, i)
+                PatSpec s = array.get(SPECS, f.patId)
+                bool isLatestBull = f.status == ST_HIT and f.isBull and ((f.tD == bull1TD and f.score == bull1Score) or (f.tD == bull2TD and f.score == bull2Score))
+                bool isLatestBear = f.status == ST_HIT and not f.isBull and ((f.tD == bear1TD and f.score == bear1Score) or (f.tD == bear2TD and f.score == bear2Score))
+                if f.status == ST_HIT and not isLatestBull and not isLatestBear
+                    drawPattern(f, s, hitTDs, hLines, hLabels, hBoxes, CAP_LINES, CAP_LABELS, CAP_BOXES, HIST_TR)
+
+bool f_HarmBull = array.get(patFlag, 0)
+bool f_HarmBear = array.get(patFlag, 1)
+
+alertcondition(f_HarmBull, "Harmonic Bullish · هارمونيك إيجابي", "🟢 هارمونيك ايجابي\n{{ticker}} · {{interval}}")
+alertcondition(f_HarmBear, "Harmonic Bearish · هارمونيك سلبي",   "🔴 هارمونيك سلبي\n{{ticker}} · {{interval}}")
+
+if barstate.isconfirmed
+    if f_HarmBull
+        alert("🟢 هارمونيك ايجابي\n" + syminfo.ticker + " · " + timeframe.period, alert.freq_once_per_bar_close)
+    if f_HarmBear
+        alert("🔴 هارمونيك سلبي\n" + syminfo.ticker + " · " + timeframe.period, alert.freq_once_per_bar_close)
+    array.set(patFlag, 0, false)
+    array.set(patFlag, 1, false)
